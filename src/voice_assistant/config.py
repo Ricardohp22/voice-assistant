@@ -42,5 +42,22 @@ CAPTURA_CONTINUA_INFORME_STATS_S: float = 1.0
 # Carpeta donde se guardan las pruebas de grabación (relativa al cwd al ejecutar).
 CARPETA_GRABACIONES: str = "recordings"
 
-# Frase de activación prevista (wake word / Porcupine en una iteración futura).
-FRASE_ACTIVACION: str = "hi box translate"
+# Frase de activación **de producto** (UX, TTS, documentación). openWakeWord no
+# la “lee”: solo ejecuta los modelos listados en OPENWAKEWORD_MODELOS. Para esta
+# frase concreta hace falta un modelo custom entrenado; mientras tanto use un
+# modelo incluido (p. ej. hey_mycroft) para probar el pipeline en la Raspberry.
+FRASE_ACTIVACION: str = "hey vox device"
+
+# --- openWakeWord (iteración 5) ---
+# Nombres de modelos incluidos (p. ej. "hey_mycroft", "alexa") y/o rutas a .onnx/.tflite.
+OPENWAKEWORD_MODELOS: list[str] = [
+    "/home/pi/vox_device_main_thread/voice-assistant/models/wakewords/hey_box_device.onnx"
+]
+OPENWAKEWORD_UMBRAL: float = 0.5
+OPENWAKEWORD_REBOTE_SEG: float = 1.2
+OPENWAKEWORD_INFERENCIA: str = "onnx"  # "onnx" o "tflite"
+OPENWAKEWORD_VAD_UMBRAL: float = 0.0  # >0 activa Silero VAD dentro de OWW
+# blocksize del InputStream; None = predeterminado PortAudio (suele bastar).
+OPENWAKEWORD_BLOQUE_STREAM_MUESTRAS: int | None = None
+# Audio de confirmación al detectar wakeword (WAV PCM16 recomendado).
+OPENWAKEWORD_AUDIO_CONFIRMACION: str = "audio_messages/wake_hola.wav"

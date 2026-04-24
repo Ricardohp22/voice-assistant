@@ -1,0 +1,337 @@
+# Copyright del asistente: módulo de integración; openWakeWord es Apache-2.0 (David Scripka).
+"""
+================================================================================
+openWakeWord en este proyecto — qué hace y cómo encaja (iteración 5)
+================================================================================
+
+1) Qué es **openWakeWord** (OWW)
+   Es una biblioteca que ejecuta **modelos pequeños** (TFLite u ONNX) sobre el
+   audio del micrófono. Cada ~**80 ms** de audio a **16 kHz** (1280 muestras en
+   PCM **int16**) pasa por:
+   - un **melspectrograma** fijo,
+   - un **extractor de incrustaciones** (“embedding”) compartido,
+   - y una **cabeza clasificadora** por cada wake word / frase entrenada.
+   La salida es un **score entre 0 y 1** por modelo: por encima de un **umbral**
+   consideramos que hubo activación.
+
+2) Flujo de datos en **nuestro** código
+   Micrófono (PortAudio / sounddevice) → callback con bloques float32 mono
+   [-1, 1] → se **acumulan** muestras hasta tener **80 ms equivalentes** a la
+   tasa *real* del dispositivo → si la tasa no es 16 kHz, **remuestreamos** a
+   16 kHz (misma idea que el pipeline STT) → **int16** de longitud **1280**
+   → ``Model.predict`` → leemos los scores → si superan el umbral y pasó el
+   **rebote** (anti-spam), imprimimos una línea en consola.
+
+   **No guardamos WAV** ni listas de audio largas: solo un buffer ``pending``
+   float32 acotado para alinear bloques; así la memoria no crece con las horas.
+   El callback **no** mantiene el candado durante ``predict`` (inferencia fuera
+   del lock para no bloquear el hilo de audio más de lo necesario).
+
+3) Relación con ``FRASE_ACTIVACION`` en ``config.py``
+   ``FRASE_ACTIVACION`` (p. ej. ``"hi box translate"``) es la **frase de
+   producto**: documentación, futuro TTS, UX. **openWakeWord no “sabe” ese
+   texto**: solo ejecuta **modelos entrenados** con ejemplos de audio de esa
+   frase (o similares). Los modelos **incluidos** en OWW son otros lemas
+   (``hey_mycroft``, ``alexa``, ``hey_jarvis``, …). Para **"hi box translate"**
+   hace falta **entrenar** un modelo custom (Colab / openwakeword.com) y poner
+   la ruta al ``.onnx`` o ``.tflite`` en ``OPENWAKEWORD_MODELOS``. Hasta
+   entonces, dejamos un modelo incluido solo para **probar el cableado** del
+   pipeline en la Raspberry.
+
+4) Por qué **1280** muestras y **int16**
+   Es el contrato del preprocesador de OWW: audio de voz telefónica 16 kHz,
+   enteros de 16 bits. El README recomienda alimentar en múltiplos de 80 ms para
+   eficiencia; nosotros entregamos exactamente un bloque de 1280 tras alinear.
+
+5) ONNX vs TFLite
+   En ``config.OPENWAKEWORD_INFERENCIA`` usamos por defecto **onnx** en ARM64:
+   suele instalar bien ``onnxruntime`` en Pi. TFLite depende del runtime
+   empaquetado con la versión de OWW (a veces ``ai_edge_litert``); si prefiere
+   TFLite, cámbielo y compruebe dependencias.
+
+6) Descarga de pesos
+   ``asegurar_modelos_openwakeword`` llama a ``download_models`` con los nombres
+   necesarios (embedding, melspec, VAD opcional, y sus wakewords). Si solo
+   configura **rutas locales** a modelos custom, igualmente disparamos una
+   descarga mínima de un modelo oficial pequeño para obligar a bajar los pesos
+   compartidos sin descargar *todos* los wakewords del proyecto. La primera
+   ejecución puede tardar y requiere red.
+================================================================================
+"""
+
+from __future__ import annotations
+
+import os
+import queue
+import threading
+import time
+import wave
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import numpy as np
+import sounddevice as sd
+
+from voice_assistant.audio.capture import resolver_tasa_muestreo_entrada
+from voice_assistant.audio.formato_pipeline import mono_float32, remuestrear_mono_lineal
+
+
+def _import_openwakeword() -> tuple[object, object, object]:
+    try:
+        import openwakeword
+        from openwakeword.model import Model
+        from openwakeword.utils import download_models
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError(
+            "Falta el paquete openwakeword. En el venv del proyecto ejecute: pip install -e ."
+        ) from exc
+    return openwakeword, Model, download_models
+
+
+def _es_ruta_a_modelo(s: str) -> bool:
+    """True si parece ruta a ONNX/TFLite (no nombre corto tipo hey_mycroft)."""
+    baja = s.lower()
+    if baja.endswith(".onnx") or baja.endswith(".tflite"):
+        return True
+    if os.path.isabs(s):
+        return True
+    if s.startswith(("./", "../", ".\\", "..\\")):
+        return True
+    return False
+
+
+def asegurar_modelos_openwakeword(nombres_o_rutas: Sequence[str]) -> None:
+    """
+    Descarga modelos base (mel + embedding + VAD) y los wakewords indicados si faltan.
+
+    ``nombres_o_rutas`` puede contener nombres cortos (p. ej. ``\"hey_mycroft\"``)
+    o rutas a ``.onnx``/``.tflite``. Las rutas deben existir en disco; no se
+    descargan de GitHub.
+    """
+    _, _, download_models = _import_openwakeword()
+    solo_nombres = [x for x in nombres_o_rutas if not _es_ruta_a_modelo(x)]
+    if solo_nombres:
+        download_models(model_names=list(solo_nombres))
+    else:
+        # Sin nombres oficiales, ``download_models([])`` bajaría *todos* los
+        # wakewords; evitamos eso y pedimos solo uno liviano para traer mel+embedding.
+        download_models(model_names=["hey_mycroft"])
+
+
+def _pcm16_1280_desde_float32(f32: np.ndarray) -> np.ndarray:
+    """Ajusta a 1280 muestras y cuantiza a int16 PCM (contrato OWW)."""
+    x = np.asarray(f32, dtype=np.float32).reshape(-1)
+    if x.size == 1280:
+        y = x
+    elif x.size > 1280:
+        y = x[:1280]
+    else:
+        y = np.pad(x, (0, 1280 - x.size), mode="constant", constant_values=0.0)
+    y = np.clip(y, -1.0, 1.0)
+    return (y * 32767.0).astype(np.int16)
+
+
+def _muestras_nativas_por_bloque_oww(tasa_nativa_hz: int) -> int:
+    """Cuántas muestras a tasa nativa equivalen a ~80 ms de audio a 16 kHz (1280)."""
+    return max(1, int(round(1280 * int(tasa_nativa_hz) / 16_000.0)))
+
+
+def _cargar_wav_pcm16_mono_float32(ruta: str | Path) -> tuple[np.ndarray, int]:
+    """
+    Carga un WAV PCM 16-bit y devuelve (audio_mono_float32, tasa_hz).
+
+    Si el archivo tiene varios canales, mezcla a mono.
+    """
+    p = Path(ruta)
+    with wave.open(str(p), "rb") as wf:
+        canales = int(wf.getnchannels())
+        tasa = int(wf.getframerate())
+        ancho = int(wf.getsampwidth())
+        if ancho != 2:
+            raise ValueError(f"El WAV debe ser PCM 16-bit (2 bytes), recibido {ancho} bytes en {p}")
+        data = wf.readframes(int(wf.getnframes()))
+    arr = np.frombuffer(data, dtype=np.int16)
+    if canales > 1:
+        arr = arr.reshape(-1, canales).mean(axis=1).astype(np.int16, copy=False)
+    audio = (arr.astype(np.float32) / 32767.0).reshape(-1)
+    return np.clip(audio, -1.0, 1.0), tasa
+
+
+@dataclass
+class _EstadoWakeStream:
+    tasa_hz: int
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    pending: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+
+    def extraer_bloques_pcm16(self, indata: np.ndarray) -> list[np.ndarray]:
+        """Acumula audio y devuelve una lista de arrays int16 (1280,) listos para OWW."""
+        mono = mono_float32(indata).reshape(-1)
+        ventanas: list[np.ndarray] = []
+        with self.lock:
+            if self.pending.size == 0:
+                self.pending = mono
+            else:
+                self.pending = np.concatenate((self.pending, mono))
+
+            need = _muestras_nativas_por_bloque_oww(self.tasa_hz)
+            max_cola = need * 40
+            if self.pending.size > max_cola:
+                self.pending = self.pending[-max_cola:]
+
+            while self.pending.size >= need:
+                nativo = self.pending[:need].copy()
+                self.pending = self.pending[need:]
+                if self.tasa_hz == 16_000:
+                    bloque_16k = nativo
+                else:
+                    bloque_16k = remuestrear_mono_lineal(nativo, self.tasa_hz, 16_000)
+                ventanas.append(_pcm16_1280_desde_float32(bloque_16k))
+        return ventanas
+
+
+def ejecutar_escucha_openwakeword(
+    duracion_segundos: float,
+    *,
+    dispositivo: int | None,
+    tasa_muestreo_solicitada_hz: int,
+    canales: int,
+    modelos: Sequence[str],
+    frase_objetivo_producto: str,
+    umbral: float,
+    rebote_segundos: float,
+    inferencia: str,
+    vad_umbral: float,
+    blocksize: int | None,
+    ruta_audio_wake: str | Path | None = None,
+) -> None:
+    """
+    Abre el micrófono, corre openWakeWord en streaming y **anuncia** activaciones por consola.
+
+    Args:
+        duracion_segundos: 0 = hasta Ctrl+C.
+        dispositivo: índice PortAudio o None.
+        tasa_muestreo_solicitada_hz: tasa solicitada al abrir el stream (p. ej. 16000).
+        canales: canales de captura.
+        modelos: rutas a ONNX/TFLite **o** nombres de modelos incluidos (``hey_mycroft``, …).
+        frase_objetivo_producto: frase de UX (p. ej. config.FRASE_ACTIVACION); solo informativa aquí.
+        umbral: score mínimo para considerar detección (OWW recomienda ~0.5 como punto de partida).
+        rebote_segundos: tiempo mínimo entre dos mensajes de “activado”.
+        inferencia: ``\"onnx\"`` o ``\"tflite\"``.
+        vad_umbral: > 0 activa VAD Silero integrado en OWW (reduce falsos en ruido no verbal).
+        blocksize: marcos por callback de sounddevice; None = valor por defecto de la librería.
+        ruta_audio_wake: WAV que se reproduce al detectar wakeword. Puede ser relativa al cwd.
+    """
+    if inferencia not in ("onnx", "tflite"):
+        raise ValueError('inferencia debe ser "onnx" o "tflite"')
+    if umbral < 0 or umbral > 1:
+        raise ValueError("umbral debe estar en [0, 1]")
+    if rebote_segundos < 0:
+        raise ValueError("rebote_segundos debe ser >= 0")
+
+    asegurar_modelos_openwakeword(modelos)
+    _, Model, _ = _import_openwakeword()
+
+    modelo = Model(
+        wakeword_models=list(modelos),
+        inference_framework=inferencia,
+        vad_threshold=float(vad_umbral),
+    )
+
+    tasa_efectiva = resolver_tasa_muestreo_entrada(
+        dispositivo,
+        int(tasa_muestreo_solicitada_hz),
+        canales=int(canales),
+    )
+    if tasa_efectiva != tasa_muestreo_solicitada_hz:
+        print(
+            f"Aviso: stream de wake a {tasa_efectiva} Hz (solicitado {tasa_muestreo_solicitada_hz} Hz); "
+            "se remuestrea a 16 kHz antes de OWW."
+        )
+
+    nombres_llaves = list(modelo.models.keys())
+
+    buf = _EstadoWakeStream(tasa_hz=int(tasa_efectiva))
+    rebote_lock = threading.Lock()
+    ultima_activacion_mono = -1e9
+    eventos_wake: queue.SimpleQueue[tuple[str, float]] = queue.SimpleQueue()
+
+    wake_audio: tuple[np.ndarray, int] | None = None
+    if ruta_audio_wake:
+        ruta_wake = Path(ruta_audio_wake)
+        if ruta_wake.exists():
+            try:
+                wake_audio = _cargar_wav_pcm16_mono_float32(ruta_wake)
+            except Exception as exc:
+                print(f"Aviso: no se pudo cargar audio de wake {ruta_wake}: {exc}")
+        else:
+            print(f"Aviso: no existe el audio de wake en {ruta_wake}.")
+
+    def callback(indata: np.ndarray, frames: int, _t, status: object) -> None:
+        nonlocal ultima_activacion_mono
+        del frames
+        if status:
+            pass
+        for pcm in buf.extraer_bloques_pcm16(indata):
+            pred = modelo.predict(pcm)
+            ahora = time.monotonic()
+            for clave, valor in pred.items():
+                arr = np.ravel(np.asarray(valor))
+                if arr.size != 1:
+                    continue
+                try:
+                    score = float(arr[0])
+                except (TypeError, ValueError):
+                    continue
+                if score < umbral:
+                    continue
+                with rebote_lock:
+                    if ahora - ultima_activacion_mono < rebote_segundos:
+                        continue
+                    ultima_activacion_mono = ahora
+                print(
+                    f"[WAKE] modelo={clave!r} score={score:.3f} (umbral={umbral}) "
+                    f"t={time.strftime('%H:%M:%S')} — "
+                    f"frase de producto objetivo: {frase_objetivo_producto!r} "
+                    f"(solo coincide si cargó un modelo entrenado para ella)."
+                )
+                eventos_wake.put((clave, score))
+
+    stream = sd.InputStream(
+        samplerate=int(tasa_efectiva),
+        blocksize=blocksize if blocksize is not None and blocksize > 0 else None,
+        device=dispositivo,
+        channels=int(canales),
+        dtype="float32",
+        latency="low",
+        callback=callback,
+    )
+
+    t0 = time.perf_counter()
+    print(
+        f"Escucha wake word (openWakeWord). Modelos cargados: {nombres_llaves}. "
+        f"Ctrl+C para salir antes de tiempo. Duración={'∞' if duracion_segundos <= 0 else str(duracion_segundos) + ' s'}"
+    )
+
+    with stream:
+        stream.start()
+        try:
+            while True:
+                time.sleep(0.2)
+                while True:
+                    try:
+                        _modelo, _score = eventos_wake.get_nowait()
+                    except queue.Empty:
+                        break
+                    if wake_audio is not None:
+                        audio, sr = wake_audio
+                        sd.stop()
+                        sd.play(audio, samplerate=sr, blocking=False)
+                if duracion_segundos > 0 and (time.perf_counter() - t0) >= duracion_segundos:
+                    break
+        except KeyboardInterrupt:
+            print("\nInterrupción por teclado.")
+        finally:
+            stream.stop()
+
+    print(f"Fin escucha wake ({time.perf_counter() - t0:.1f} s reloj).")

@@ -12,6 +12,8 @@ Instalar el paquete en modo editable (recomendado; así ``python main.py`` encue
     python main.py --test-record 5 --raw-device-rate
     python main.py --stream-chunks 30
     python main.py --stream-chunks 0
+    python main.py --wake-listen 60
+    python main.py --wake-listen 0
 
 Alternativa sin instalar: ``PYTHONPATH=src python main.py ...``
 
@@ -38,6 +40,7 @@ from voice_assistant.audio.dispositivo import (
 )
 from voice_assistant.audio.captura_continua import ejecutar_escucha_continua
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
+from voice_assistant.wake import ejecutar_escucha_openwakeword
 from voice_assistant import config
 
 
@@ -92,6 +95,26 @@ def _cmd_stream_chunks(
         estadisticas_cada_seg=(
             config.CAPTURA_CONTINUA_INFORME_STATS_S if intervalo_stats is None else intervalo_stats
         ),
+    )
+
+
+def _cmd_wake_listen(duracion: float) -> None:
+    """Escucha con openWakeWord (iteración 5); modelos y umbral vienen de ``config``."""
+    dev = _dispositivo_entrada_resuelto()
+    print(f"Dispositivo: {describir_dispositivo_entrada(dev)}")
+    ejecutar_escucha_openwakeword(
+        duracion,
+        dispositivo=dev,
+        tasa_muestreo_solicitada_hz=config.TASA_MUESTREO_HZ,
+        canales=config.CANALES,
+        modelos=config.OPENWAKEWORD_MODELOS,
+        frase_objetivo_producto=config.FRASE_ACTIVACION,
+        umbral=config.OPENWAKEWORD_UMBRAL,
+        rebote_segundos=config.OPENWAKEWORD_REBOTE_SEG,
+        inferencia=config.OPENWAKEWORD_INFERENCIA,
+        vad_umbral=config.OPENWAKEWORD_VAD_UMBRAL,
+        blocksize=config.OPENWAKEWORD_BLOQUE_STREAM_MUESTRAS,
+        ruta_audio_wake=config.OPENWAKEWORD_AUDIO_CONFIRMACION,
     )
 
 
@@ -213,6 +236,18 @@ def main() -> None:
         metavar="MARCOS",
         help="Solo con --stream-chunks: marcos por callback (predeterminado: config)",
     )
+    parser.add_argument(
+        "--wake-listen",
+        type=float,
+        nargs="?",
+        const=60.0,
+        default=None,
+        metavar="SEG",
+        help=(
+            "Iteración 5: openWakeWord en vivo (no guarda audio). SEG=segundos; sin valor → 60; "
+            "0 → hasta Ctrl+C. Parámetros: config.OPENWAKEWORD_* y FRASE_ACTIVACION"
+        ),
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -229,6 +264,10 @@ def main() -> None:
             intervalo_stats=args.stream_stats_interval,
             marcos_bloque=args.stream_blocksize,
         )
+        return
+
+    if args.wake_listen is not None:
+        _cmd_wake_listen(args.wake_listen)
         return
 
     if args.test_record is not None:

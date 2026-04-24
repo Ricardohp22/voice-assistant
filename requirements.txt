@@ -1,4 +1,7 @@
-# Captura de audio (PortAudio vía sounddevice). En Raspberry Pi suele hacer falta:
-#   sudo apt install portaudio19-dev
-numpy>=1.24.0
-sounddevice>=0.4.6
+cffi==2.0.0
+numpy==2.4.4
+pycparser==3.0
+sounddevice==0.5.5
+openwakeword>=0.5.1
+# Editable Git install with no remote (voice-assistant==0.1.0)
+-e /home/pi/vox_device_main_thread/voice-assistant
