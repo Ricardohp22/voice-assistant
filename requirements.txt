@@ -1,0 +1,4 @@
+# Captura de audio (PortAudio vía sounddevice). En Raspberry Pi suele hacer falta:
+#   sudo apt install portaudio19-dev
+numpy>=1.24.0
+sounddevice>=0.4.6
