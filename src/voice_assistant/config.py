@@ -31,6 +31,14 @@ TASA_SALIDA_PIPELINE_HZ: int = 16_000
 # Grabación monoaural; la mayoría de micrófonos USB expone 1 canal.
 CANALES: int = 1
 
+# --- Captura continua (iteración 4): stream por chunks sin guardar audio ---
+# Muestras por callback PortAudio. Ej.: 512 a 16 kHz ≈ 32 ms por bloque.
+CAPTURA_CONTINUA_BLOQUE_MUESTRAS: int = 512
+# Latencia del stream: "low", "high" o segundos (ver sounddevice.InputStream).
+CAPTURA_CONTINUA_LATENCIA: str | float = "low"
+# Periodo entre líneas de métricas (s) al usar ``main.py --stream-chunks``.
+CAPTURA_CONTINUA_INFORME_STATS_S: float = 1.0
+
 # Carpeta donde se guardan las pruebas de grabación (relativa al cwd al ejecutar).
 CARPETA_GRABACIONES: str = "recordings"
 

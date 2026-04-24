@@ -10,6 +10,8 @@ Instalar el paquete en modo editable (recomendado; así ``python main.py`` encue
     python main.py --check-input-device
     python main.py --test-record 5
     python main.py --test-record 5 --raw-device-rate
+    python main.py --stream-chunks 30
+    python main.py --stream-chunks 0
 
 Alternativa sin instalar: ``PYTHONPATH=src python main.py ...``
 
@@ -34,6 +36,7 @@ from voice_assistant.audio.dispositivo import (
     describir_dispositivo_entrada,
     resolver_dispositivo_entrada,
 )
+from voice_assistant.audio.captura_continua import ejecutar_escucha_continua
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
 from voice_assistant import config
 
@@ -66,6 +69,30 @@ def _cmd_comprobar_dispositivo_entrada() -> None:
         canales=config.CANALES,
     )
     print(f"Comprobación OK: captura a {tasa} Hz, RMS aproximado={rms:.6f} (silencio ≈ 0).")
+
+
+def _cmd_stream_chunks(
+    duracion: float,
+    *,
+    intervalo_stats: float | None,
+    marcos_bloque: int | None,
+) -> None:
+    """Escucha continua en bloques con métricas (iteración 4); no escribe WAV."""
+    dev = _dispositivo_entrada_resuelto()
+    print(f"Dispositivo: {describir_dispositivo_entrada(dev)}")
+    ejecutar_escucha_continua(
+        duracion,
+        dispositivo=dev,
+        tasa_muestreo_solicitada_hz=config.TASA_MUESTREO_HZ,
+        canales=config.CANALES,
+        marcos_por_bloque=(
+            config.CAPTURA_CONTINUA_BLOQUE_MUESTRAS if marcos_bloque is None else marcos_bloque
+        ),
+        latencia=config.CAPTURA_CONTINUA_LATENCIA,
+        estadisticas_cada_seg=(
+            config.CAPTURA_CONTINUA_INFORME_STATS_S if intervalo_stats is None else intervalo_stats
+        ),
+    )
 
 
 def _cmd_prueba_grabacion(duracion: float, *, salida_pipeline: bool) -> Path:
@@ -160,6 +187,32 @@ def main() -> None:
             "(p. ej. 48000 Hz)"
         ),
     )
+    parser.add_argument(
+        "--stream-chunks",
+        type=float,
+        nargs="?",
+        const=30.0,
+        default=None,
+        metavar="SEG",
+        help=(
+            "Iteración 4: escucha continua por bloques (no guarda audio). "
+            "SEG=segundos; sin valor → 30; 0 → hasta Ctrl+C"
+        ),
+    )
+    parser.add_argument(
+        "--stream-stats-interval",
+        type=float,
+        default=None,
+        metavar="SEG",
+        help="Solo con --stream-chunks: segundos entre informes de métricas (predeterminado: config)",
+    )
+    parser.add_argument(
+        "--stream-blocksize",
+        type=int,
+        default=None,
+        metavar="MARCOS",
+        help="Solo con --stream-chunks: marcos por callback (predeterminado: config)",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -168,6 +221,14 @@ def main() -> None:
 
     if args.check_input_device:
         _cmd_comprobar_dispositivo_entrada()
+        return
+
+    if args.stream_chunks is not None:
+        _cmd_stream_chunks(
+            args.stream_chunks,
+            intervalo_stats=args.stream_stats_interval,
+            marcos_bloque=args.stream_blocksize,
+        )
         return
 
     if args.test_record is not None:

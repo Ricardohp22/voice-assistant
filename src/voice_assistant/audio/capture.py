@@ -43,6 +43,35 @@ def _es_error_tasa_invalida(exc: BaseException) -> bool:
     return False
 
 
+def resolver_tasa_muestreo_entrada(
+    dispositivo: int | None,
+    tasa_solicitada: int,
+    *,
+    canales: int = 1,
+) -> int:
+    """
+    Devuelve la tasa de muestreo que PortAudio usará al abrir la entrada.
+
+    Si ``tasa_solicitada`` no es válida para el dispositivo, devuelve la tasa
+    predeterminada del hardware (misma lógica que ``grabar_muestras``).
+    """
+    try:
+        sd.check_input_settings(
+            device=dispositivo,
+            samplerate=int(tasa_solicitada),
+            channels=int(canales),
+            dtype="float32",
+        )
+        return int(tasa_solicitada)
+    except sd.PortAudioError as exc:
+        if not _es_error_tasa_invalida(exc):
+            raise
+        alterna = _tasa_predeterminada_dispositivo(dispositivo)
+        if alterna == tasa_solicitada:
+            raise
+        return alterna
+
+
 def listar_dispositivos_entrada(imprimir: bool = True) -> list[dict[str, Any]]:
     """
     Devuelve la lista de dispositivos de entrada que expone PortAudio.
