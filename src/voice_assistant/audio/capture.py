@@ -1,8 +1,8 @@
 """
 Captura de audio desde el micrófono y guardado en WAV (PCM 16 bits, mono).
 
-Depende de `sounddevice` (PortAudio). Los dispositivos se identifican por índice
-entero; conviene listarlos antes de fijar `DISPOSITIVO_ENTRADA` en `config.py`.
+Depende de `sounddevice` (PortAudio). El índice de entrada suele resolverse desde
+`config` vía ``audio.dispositivo.resolver_dispositivo_entrada`` (índice o nombre).
 """
 
 from __future__ import annotations

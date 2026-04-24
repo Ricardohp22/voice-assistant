@@ -8,3 +8,4 @@ src/voice_assistant.egg-info/requires.txt
 src/voice_assistant.egg-info/top_level.txt
 src/voice_assistant/audio/__init__.py
 src/voice_assistant/audio/capture.py
+src/voice_assistant/audio/formato_pipeline.py
