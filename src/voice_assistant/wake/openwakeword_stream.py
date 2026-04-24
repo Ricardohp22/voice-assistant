@@ -22,10 +22,11 @@ openWakeWord en este proyecto — qué hace y cómo encaja (iteración 5)
    → ``Model.predict`` → leemos los scores → si superan el umbral y pasó el
    **rebote** (anti-spam), imprimimos una línea en consola.
 
-   **No guardamos WAV** ni listas de audio largas: solo un buffer ``pending``
-   float32 acotado para alinear bloques; así la memoria no crece con las horas.
-   El callback **no** mantiene el candado durante ``predict`` (inferencia fuera
-   del lock para no bloquear el hilo de audio más de lo necesario).
+   **No guardamos WAV** ni listas de audio largas: los trozos del micrófono se
+   encadenan en una cola de fragmentos (``deque``) con límite de muestras, sin
+   ``np.concatenate`` del buffer entero en cada callback (eso degradaba la CPU
+   con el tiempo y hacía fallar el wake). La inferencia puede ir en un hilo
+   aparte para no bloquear el callback de PortAudio.
 
 3) Relación con ``FRASE_ACTIVACION`` en ``config.py``
    ``FRASE_ACTIVACION`` (p. ej. ``"hi box translate"``) es la **frase de
@@ -66,6 +67,7 @@ import queue
 import threading
 import time
 import wave
+from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -160,28 +162,49 @@ def _cargar_wav_pcm16_mono_float32(ruta: str | Path) -> tuple[np.ndarray, int]:
 
 @dataclass
 class _EstadoWakeStream:
+    """
+    Cola de fragmentos float32 mono: evita ``concatenate(pending, chunk)`` por
+    callback (coste proporcional al tamaño del backlog y degrada el wake al
+    cabo de minutos en Raspberry).
+    """
+
     tasa_hz: int
     lock: threading.Lock = field(default_factory=threading.Lock)
-    pending: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
+    fragmentos: deque[np.ndarray] = field(default_factory=deque)
+    total_muestras: int = 0
 
     def extraer_bloques_pcm16(self, indata: np.ndarray) -> list[np.ndarray]:
         """Acumula audio y devuelve una lista de arrays int16 (1280,) listos para OWW."""
         mono = mono_float32(indata).reshape(-1)
         ventanas: list[np.ndarray] = []
+        need = _muestras_nativas_por_bloque_oww(self.tasa_hz)
+        max_cola = need * 40
+
         with self.lock:
-            if self.pending.size == 0:
-                self.pending = mono
-            else:
-                self.pending = np.concatenate((self.pending, mono))
+            self.fragmentos.append(mono)
+            self.total_muestras += int(mono.size)
 
-            need = _muestras_nativas_por_bloque_oww(self.tasa_hz)
-            max_cola = need * 40
-            if self.pending.size > max_cola:
-                self.pending = self.pending[-max_cola:]
+            while self.total_muestras > max_cola:
+                viejo = self.fragmentos.popleft()
+                self.total_muestras -= int(viejo.size)
 
-            while self.pending.size >= need:
-                nativo = self.pending[:need].copy()
-                self.pending = self.pending[need:]
+            while self.total_muestras >= need:
+                partes: list[np.ndarray] = []
+                faltan = need
+                while faltan > 0:
+                    primero = self.fragmentos[0]
+                    if primero.size <= faltan:
+                        partes.append(primero)
+                        self.fragmentos.popleft()
+                        self.total_muestras -= int(primero.size)
+                        faltan -= int(primero.size)
+                    else:
+                        partes.append(primero[:faltan].copy())
+                        self.fragmentos[0] = primero[faltan:]
+                        self.total_muestras -= faltan
+                        faltan = 0
+
+                nativo = partes[0] if len(partes) == 1 else np.concatenate(partes, dtype=np.float32)
                 if self.tasa_hz == 16_000:
                     bloque_16k = nativo
                 else:
@@ -253,8 +276,69 @@ def ejecutar_escucha_openwakeword(
 
     buf = _EstadoWakeStream(tasa_hz=int(tasa_efectiva))
     rebote_lock = threading.Lock()
-    ultima_activacion_mono = -1e9
+    # Lista de un elemento: compartida entre hilos sin ``nonlocal``.
+    ultima_activacion_mono: list[float] = [-1e9]
     eventos_wake: queue.SimpleQueue[tuple[str, float]] = queue.SimpleQueue()
+
+    # Inferencia fuera del callback de PortAudio: evita que ONNX supere el
+    # tiempo de un bloque y provoque xruns / audio “comido” (wake deja de ir).
+    _COLA_INFERENCIA_MAX = 16
+    infer_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=_COLA_INFERENCIA_MAX)
+    stop_infer = threading.Event()
+
+    def _encolar_pcm_oww(pcm: np.ndarray) -> None:
+        try:
+            infer_queue.put_nowait(pcm)
+        except queue.Full:
+            try:
+                infer_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                infer_queue.put_nowait(pcm)
+            except queue.Full:
+                pass
+
+    def _hilo_inferencia() -> None:
+        while True:
+            try:
+                pcm = infer_queue.get(timeout=0.08)
+            except queue.Empty:
+                if stop_infer.is_set():
+                    break
+                continue
+            if pcm is None:
+                break
+            try:
+                pred = modelo.predict(pcm)
+            except Exception as exc:  # pragma: no cover
+                print(f"[WAKE] error en inferencia: {exc}")
+                continue
+            ahora = time.monotonic()
+            for clave, valor in pred.items():
+                arr = np.ravel(np.asarray(valor))
+                if arr.size != 1:
+                    continue
+                try:
+                    score = float(arr[0])
+                except (TypeError, ValueError):
+                    continue
+                if score < umbral:
+                    continue
+                with rebote_lock:
+                    if ahora - ultima_activacion_mono[0] < rebote_segundos:
+                        continue
+                    ultima_activacion_mono[0] = ahora
+                print(
+                    f"[WAKE] modelo={clave!r} score={score:.3f} (umbral={umbral}) "
+                    f"t={time.strftime('%H:%M:%S')} — "
+                    f"frase de producto objetivo: {frase_objetivo_producto!r} "
+                    f"(solo coincide si cargó un modelo entrenado para ella)."
+                )
+                eventos_wake.put((clave, score))
+
+    infer_thread = threading.Thread(target=_hilo_inferencia, name="openWakeWord-infer", daemon=True)
+    infer_thread.start()
 
     wake_audio: tuple[np.ndarray, int] | None = None
     if ruta_audio_wake:
@@ -268,34 +352,11 @@ def ejecutar_escucha_openwakeword(
             print(f"Aviso: no existe el audio de wake en {ruta_wake}.")
 
     def callback(indata: np.ndarray, frames: int, _t, status: object) -> None:
-        nonlocal ultima_activacion_mono
         del frames
         if status:
             pass
         for pcm in buf.extraer_bloques_pcm16(indata):
-            pred = modelo.predict(pcm)
-            ahora = time.monotonic()
-            for clave, valor in pred.items():
-                arr = np.ravel(np.asarray(valor))
-                if arr.size != 1:
-                    continue
-                try:
-                    score = float(arr[0])
-                except (TypeError, ValueError):
-                    continue
-                if score < umbral:
-                    continue
-                with rebote_lock:
-                    if ahora - ultima_activacion_mono < rebote_segundos:
-                        continue
-                    ultima_activacion_mono = ahora
-                print(
-                    f"[WAKE] modelo={clave!r} score={score:.3f} (umbral={umbral}) "
-                    f"t={time.strftime('%H:%M:%S')} — "
-                    f"frase de producto objetivo: {frase_objetivo_producto!r} "
-                    f"(solo coincide si cargó un modelo entrenado para ella)."
-                )
-                eventos_wake.put((clave, score))
+            _encolar_pcm_oww(pcm)
 
     stream = sd.InputStream(
         samplerate=int(tasa_efectiva),
@@ -313,25 +374,37 @@ def ejecutar_escucha_openwakeword(
         f"Ctrl+C para salir antes de tiempo. Duración={'∞' if duracion_segundos <= 0 else str(duracion_segundos) + ' s'}"
     )
 
-    with stream:
-        stream.start()
-        try:
-            while True:
-                time.sleep(0.2)
+    try:
+        with stream:
+            stream.start()
+            try:
                 while True:
-                    try:
-                        _modelo, _score = eventos_wake.get_nowait()
-                    except queue.Empty:
+                    time.sleep(0.2)
+                    while True:
+                        try:
+                            _modelo, _score = eventos_wake.get_nowait()
+                        except queue.Empty:
+                            break
+                        if wake_audio is not None:
+                            audio, sr = wake_audio
+                            sd.play(audio, samplerate=sr, blocking=False)
+                    if duracion_segundos > 0 and (time.perf_counter() - t0) >= duracion_segundos:
                         break
-                    if wake_audio is not None:
-                        audio, sr = wake_audio
-                        sd.stop()
-                        sd.play(audio, samplerate=sr, blocking=False)
-                if duracion_segundos > 0 and (time.perf_counter() - t0) >= duracion_segundos:
+            except KeyboardInterrupt:
+                print("\nInterrupción por teclado.")
+            finally:
+                stream.stop()
+    finally:
+        stop_infer.set()
+        while True:
+            try:
+                infer_queue.put_nowait(None)
+                break
+            except queue.Full:
+                try:
+                    infer_queue.get_nowait()
+                except queue.Empty:
                     break
-        except KeyboardInterrupt:
-            print("\nInterrupción por teclado.")
-        finally:
-            stream.stop()
+        infer_thread.join(timeout=5.0)
 
     print(f"Fin escucha wake ({time.perf_counter() - t0:.1f} s reloj).")
