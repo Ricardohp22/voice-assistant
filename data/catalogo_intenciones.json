@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "descripcion": "Catálogo de intenciones tras el wakeup. Tras STT (o prueba con --test-oracion) se normaliza el texto, se quitan prefijos de wake y se busca la primera intención que cumpla disparadores.",
+  "prefijos_wake": [
+    "hey vox device",
+    "hex vox device",
+    "hey box device",
+    "hi box device"
+  ],
+  "intenciones": [
+    {
+      "id": "saludar",
+      "titulo": "Saludo",
+      "descripcion": "Saludo breve por audio; disparadores orientados a formas habituales en español.",
+      "prioridad": 10,
+      "disparadores": {
+        "contiene_alguna": [
+          "saludame",
+          "saluda",
+          "saluden",
+          "hola",
+          "buen dia",
+          "buenos dias",
+          "buenas tardes",
+          "buenas noches",
+          "buenos días",
+          "buen día",
+          "que tal",
+          "qué tal",
+          "como estas",
+          "cómo estás"
+        ]
+      },
+      "accion": {
+        "tipo": "reproducir_audio",
+        "parametros": {
+          "ruta": "audio_messages/saludo.wav"
+        }
+      }
+    }
+  ]
+}

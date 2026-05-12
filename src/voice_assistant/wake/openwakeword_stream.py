@@ -66,7 +66,6 @@ import os
 import queue
 import threading
 import time
-import wave
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -77,6 +76,7 @@ import sounddevice as sd
 
 from voice_assistant.audio.capture import resolver_tasa_muestreo_entrada
 from voice_assistant.audio.formato_pipeline import mono_float32, remuestrear_mono_lineal
+from voice_assistant.audio.wav_io import cargar_wav_pcm16_mono_float32
 
 
 def _import_openwakeword() -> tuple[object, object, object]:
@@ -137,27 +137,6 @@ def _pcm16_1280_desde_float32(f32: np.ndarray) -> np.ndarray:
 def _muestras_nativas_por_bloque_oww(tasa_nativa_hz: int) -> int:
     """Cuántas muestras a tasa nativa equivalen a ~80 ms de audio a 16 kHz (1280)."""
     return max(1, int(round(1280 * int(tasa_nativa_hz) / 16_000.0)))
-
-
-def _cargar_wav_pcm16_mono_float32(ruta: str | Path) -> tuple[np.ndarray, int]:
-    """
-    Carga un WAV PCM 16-bit y devuelve (audio_mono_float32, tasa_hz).
-
-    Si el archivo tiene varios canales, mezcla a mono.
-    """
-    p = Path(ruta)
-    with wave.open(str(p), "rb") as wf:
-        canales = int(wf.getnchannels())
-        tasa = int(wf.getframerate())
-        ancho = int(wf.getsampwidth())
-        if ancho != 2:
-            raise ValueError(f"El WAV debe ser PCM 16-bit (2 bytes), recibido {ancho} bytes en {p}")
-        data = wf.readframes(int(wf.getnframes()))
-    arr = np.frombuffer(data, dtype=np.int16)
-    if canales > 1:
-        arr = arr.reshape(-1, canales).mean(axis=1).astype(np.int16, copy=False)
-    audio = (arr.astype(np.float32) / 32767.0).reshape(-1)
-    return np.clip(audio, -1.0, 1.0), tasa
 
 
 @dataclass
@@ -345,7 +324,7 @@ def ejecutar_escucha_openwakeword(
         ruta_wake = Path(ruta_audio_wake)
         if ruta_wake.exists():
             try:
-                wake_audio = _cargar_wav_pcm16_mono_float32(ruta_wake)
+                wake_audio = cargar_wav_pcm16_mono_float32(ruta_wake)
             except Exception as exc:
                 print(f"Aviso: no se pudo cargar audio de wake {ruta_wake}: {exc}")
         else:

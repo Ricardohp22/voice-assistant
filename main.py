@@ -14,6 +14,8 @@ Instalar el paquete en modo editable (recomendado; así ``python main.py`` encue
     python main.py --stream-chunks 0
     python main.py --wake-listen 60
     python main.py --wake-listen 0
+    python main.py --list-intents
+    python main.py --test-oracion "Hex vox device hola"
 
 Alternativa sin instalar: ``PYTHONPATH=src python main.py ...``
 
@@ -40,6 +42,7 @@ from voice_assistant.audio.dispositivo import (
 )
 from voice_assistant.audio.captura_continua import ejecutar_escucha_continua
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
+from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_accion
 from voice_assistant.wake import ejecutar_escucha_openwakeword
 from voice_assistant import config
 
@@ -96,6 +99,30 @@ def _cmd_stream_chunks(
             config.CAPTURA_CONTINUA_INFORME_STATS_S if intervalo_stats is None else intervalo_stats
         ),
     )
+
+
+def _cmd_list_intents() -> None:
+    """Lista intenciones definidas en el catálogo JSON."""
+    cat = cargar_catalogo(config.CATALOGO_INTENCIONES_RUTA)
+    print(f"Catálogo: v{cat.get('version')} ({config.CATALOGO_INTENCIONES_RUTA})")
+    for it in cat.get("intenciones") or []:
+        iid = it.get("id", "?")
+        tit = it.get("titulo", "")
+        print(f"  - {iid}: {tit}")
+
+
+def _cmd_test_oracion(oracion: str) -> None:
+    """Empareja una oración contra el catálogo local y ejecuta la acción (p. ej. saludo por WAV)."""
+    cat = cargar_catalogo(config.CATALOGO_INTENCIONES_RUTA)
+    hit = emparejar_intencion(cat, oracion)
+    if hit is None:
+        print("Sin intención coincidente para esta oración.")
+        return
+    print(
+        f"Intención: {hit.intencion_id} ({hit.intencion_titulo}) "
+        f"disparador={hit.disparador!r} | tras_wake={hit.texto_tras_wake!r}"
+    )
+    ejecutar_accion(hit.accion, bloqueante=True)
 
 
 def _cmd_wake_listen(duracion: float) -> None:
@@ -248,6 +275,17 @@ def main() -> None:
             "0 → hasta Ctrl+C. Parámetros: config.OPENWAKEWORD_* y FRASE_ACTIVACION"
         ),
     )
+    parser.add_argument(
+        "--list-intents",
+        action="store_true",
+        help="Lista intenciones del catálogo (data/catalogo_intenciones.json; ruta en config)",
+    )
+    parser.add_argument(
+        "--test-oracion",
+        type=str,
+        metavar="TEXTO",
+        help='Prueba emparejo local + acción (ej.: --test-oracion "Hex vox device hola")',
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -268,6 +306,14 @@ def main() -> None:
 
     if args.wake_listen is not None:
         _cmd_wake_listen(args.wake_listen)
+        return
+
+    if args.list_intents:
+        _cmd_list_intents()
+        return
+
+    if args.test_oracion is not None:
+        _cmd_test_oracion(args.test_oracion)
         return
 
     if args.test_record is not None:

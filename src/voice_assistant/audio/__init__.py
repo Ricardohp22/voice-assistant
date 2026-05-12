@@ -17,8 +17,10 @@ from .formato_pipeline import (
     preparar_muestras_para_stt,
     remuestrear_mono_lineal,
 )
+from .wav_io import cargar_wav_pcm16_mono_float32
 
 __all__ = [
+    "cargar_wav_pcm16_mono_float32",
     "comprobar_entrada_entrega_muestras",
     "describir_dispositivo_entrada",
     "ejecutar_escucha_continua",
