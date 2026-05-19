@@ -8,3 +8,5 @@ recordings/
 
 # Directorios de caché de Python
 __pycache__/
+src/voice_assistant/__pycache__/
+src/voice_assistant/wake/__pycache__/

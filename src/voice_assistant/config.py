@@ -60,7 +60,7 @@ OPENWAKEWORD_VAD_UMBRAL: float = 0.0  # >0 activa Silero VAD dentro de OWW
 # blocksize del InputStream; None = predeterminado PortAudio (suele bastar).
 OPENWAKEWORD_BLOQUE_STREAM_MUESTRAS: int | None = None
 # Audio de confirmación al detectar wakeword (WAV PCM16 recomendado).
-OPENWAKEWORD_AUDIO_CONFIRMACION: str = "audio_messages/wake_hola.wav"
+OPENWAKEWORD_AUDIO_CONFIRMACION: str = "audio_messages/wake_sound.wav"
 
 # Catálogo de intenciones post-wakeup (JSON relativo a la raíz del repositorio).
 CATALOGO_INTENCIONES_RUTA: str = "data/catalogo_intenciones.json"
