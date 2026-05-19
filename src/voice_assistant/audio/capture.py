@@ -52,6 +52,9 @@ def resolver_tasa_muestreo_entrada(
     """
     Devuelve la tasa de muestreo que PortAudio usará al abrir la entrada.
 
+    Usado al **iniciar** el stream de wake (``esperar_primera_activacion_wake``)
+    para saber si habrá que remuestrear a 16 kHz antes de openWakeWord.
+
     Si ``tasa_solicitada`` no es válida para el dispositivo, devuelve la tasa
     predeterminada del hardware (misma lógica que ``grabar_muestras``).
     """
@@ -112,27 +115,23 @@ def grabar_muestras(
     canales: int = 1,
 ) -> tuple[np.ndarray, int]:
     """
-    Graba audio del micrófono y devuelve (muestras, tasa_efectiva_hz).
+    Graba la **orden del usuario** tras el wake (fase 3 de ``--wake-turn``).
+
+    Grabación **bloqueante** con ``sd.rec``: no usa callbacks. El pipeline pasa
+    el resultado a ``preparar_muestras_para_stt`` para Whisper.
 
     Las muestras son NumPy float32 en [-1.0, 1.0]. La tasa efectiva puede
-    diferir de la solicitada: muchos micrófonos USB abiertos como ``hw:0,0``
-    (primer dispositivo en la lista) **no** aceptan 16 kHz y sí 44100/48000 Hz;
-    en ese caso se reintenta automáticamente con la tasa predeterminada del
-    dispositivo que reporta PortAudio. Los dispositivos virtuales (p. ej.
-    ``default`` / PipeWire) suelen aceptar 16 kHz por remuestreo en software.
-
-    Usa bloqueo hasta completar la duración indicada; adecuado para pruebas cortas.
-    Para streaming o detección de voz en tiempo real habrá que usar otro API
-    (callbacks o ``InputStream``) en una iteración posterior.
+    diferir de la solicitada (USB a 48 kHz, etc.); en ese caso se reintenta con
+    la tasa nativa del dispositivo.
 
     Args:
-        duracion_segundos: Tiempo de grabación (> 0).
+        duracion_segundos: Tiempo de grabación (> 0); ver ``POST_WAKE_GRABAR_ORDEN_SEG``.
         dispositivo: Índice PortAudio o None para el predeterminado.
         tasa_muestreo_hz: Frecuencia deseada; si falla, se prueba la nativa del dispositivo.
         canales: Número de canales de entrada (1 = mono).
 
     Returns:
-        Tupla (array de forma (frames, canales) float32, tasa de muestreo real en Hz).
+        Tupla (array (frames, canales) float32, tasa real en Hz).
 
     Raises:
         ValueError: Si la duración no es positiva.
@@ -143,7 +142,7 @@ def grabar_muestras(
 
     def _rec(tasa_hz: int) -> np.ndarray:
         num_frames = int(round(duracion_segundos * tasa_hz))
-        # sounddevice devuelve float32 normalizado; lectura bloqueante hasta llenar el buffer.
+        # Lectura bloqueante: el hilo queda aquí hasta completar la ventana de la orden.
         return sd.rec(
             num_frames,
             samplerate=tasa_hz,
@@ -179,10 +178,10 @@ def guardar_wav_mono(
     tasa_muestreo_hz: int,
 ) -> Path:
     """
-    Guarda muestras mono (o mezcla canales a mono) en un archivo WAV PCM 16-bit.
+    Guarda audio en WAV PCM 16-bit mono (depuración o pruebas).
 
-    Convierte float32 en rango [-1, 1] a int16 con recorte para evitar saturación
-    numérica. Si `muestras` tiene varios canales, se promedia por eje de canal.
+    En ``--wake-turn`` solo se usa si ``WAKE_TURN_GUARDAR_WAV_DEBUG`` es True,
+    para revisar qué captó el micrófono antes de Whisper.
 
     Args:
         ruta_salida: Ruta del .wav a crear (se crean directorios padre si no existen).

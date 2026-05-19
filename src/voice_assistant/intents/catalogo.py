@@ -20,7 +20,12 @@ def raiz_repositorio() -> Path:
 
 
 def normalizar_oracion(texto: str) -> str:
-    """Minúsculas, sin acentos, espacios compactados."""
+    """
+    Prepara texto de STT para comparar con disparadores del catálogo.
+
+    Minúsculas, sin acentos, espacios compactados. Así "Hola" y "hola" coinciden
+    y variantes con tildes de Whisper no rompen el emparejo.
+    """
     s = texto.strip().lower()
     nkfd = unicodedata.normalize("NFD", s)
     sin_acentos = "".join(c for c in nkfd if unicodedata.category(c) != "Mn")
@@ -29,7 +34,12 @@ def normalizar_oracion(texto: str) -> str:
 
 
 def quitar_prefijos_wake(texto_norm: str, prefijos: list[str]) -> str:
-    """Elimina el primer prefijo de wake que coincida al inicio."""
+    """
+    Quita del inicio la variante de wake que Whisper suele transcribir.
+
+    Los prefijos vienen de ``prefijos_wake`` en el JSON (p. ej. "hex vox device").
+    Se prueban del más largo al más corto para no cortar de más.
+    """
     t = texto_norm.strip()
     prefs_ord = sorted((normalizar_oracion(p) for p in prefijos), key=len, reverse=True)
     for p in prefs_ord:
@@ -51,6 +61,11 @@ class ResultadoEmpareo:
 
 
 def cargar_catalogo(ruta_relativa_o_absoluta: str | Path) -> dict[str, Any]:
+    """
+    Lee ``data/catalogo_intenciones.json`` (o ruta absoluta).
+
+    Rutas relativas se resuelven desde la raíz del repositorio, no desde el cwd.
+    """
     p = Path(ruta_relativa_o_absoluta)
     if not p.is_absolute():
         p = raiz_repositorio() / p
@@ -60,15 +75,21 @@ def cargar_catalogo(ruta_relativa_o_absoluta: str | Path) -> dict[str, Any]:
 
 def emparejar_intencion(catalogo: dict[str, Any], oracion: str) -> ResultadoEmpareo | None:
     """
-    Devuelve la intención que mejor coincide, o None.
+    Elige la intención que mejor coincide con la transcripción del turno.
 
-    Criterio: entre las intenciones con algún disparador contenido en el texto
-    (tras wake; si queda vacío se usa el texto completo normalizado), gana la
-    coincidencia con **disparador más largo**; empate por **mayor prioridad**.
+    Pasos:
+      1. Normalizar la oración completa.
+      2. Quitar prefijos de wake del JSON si aparecen al inicio.
+      3. Buscar disparadores ``contiene_alguna`` dentro del texto restante.
+      4. Si varias coinciden: gana el disparador **más largo**; empate → mayor ``prioridad``.
+
+    Returns:
+        ``ResultadoEmpareo`` con la acción a ejecutar, o ``None`` si no hay match.
     """
     norm = normalizar_oracion(oracion)
     prefijos = list(catalogo.get("prefijos_wake") or [])
     tras_wake = quitar_prefijos_wake(norm, prefijos)
+    # Si tras quitar wake no queda nada útil, buscar en toda la frase normalizada.
     texto_busqueda = tras_wake if tras_wake.strip() else norm
 
     intenciones = list(catalogo.get("intenciones") or [])

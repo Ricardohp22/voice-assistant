@@ -153,20 +153,28 @@ class _EstadoWakeStream:
     total_muestras: int = 0
 
     def extraer_bloques_pcm16(self, indata: np.ndarray) -> list[np.ndarray]:
-        """Acumula audio y devuelve una lista de arrays int16 (1280,) listos para OWW."""
+        """
+        Acumula audio del callback y devuelve ventanas int16 (1280,) para OWW.
+
+        Usado por ``esperar_primera_activacion_wake`` (``--wake-turn``) y por
+        ``ejecutar_escucha_openwakeword``. Cada ventana ≈ 80 ms a 16 kHz.
+        """
         mono = mono_float32(indata).reshape(-1)
         ventanas: list[np.ndarray] = []
+        # Cuántas muestras a la tasa *nativa* del mic equivalen a 1280 @ 16 kHz.
         need = _muestras_nativas_por_bloque_oww(self.tasa_hz)
-        max_cola = need * 40
+        max_cola = need * 40  # ~3,2 s de cola máxima; descarta lo más antiguo si hay retraso.
 
         with self.lock:
             self.fragmentos.append(mono)
             self.total_muestras += int(mono.size)
 
+            # Evitar crecimiento ilimitado si la inferencia va más lenta que la captura.
             while self.total_muestras > max_cola:
                 viejo = self.fragmentos.popleft()
                 self.total_muestras -= int(viejo.size)
 
+            # Mientras haya audio suficiente, emitir una ventana OWW por iteración.
             while self.total_muestras >= need:
                 partes: list[np.ndarray] = []
                 faltan = need
@@ -405,17 +413,22 @@ def esperar_primera_activacion_wake(
     ruta_audio_wake: str | Path | None,
 ) -> tuple[str, float] | None:
     """
-    Abre el micrófono y devuelve la **primera** activación de wake dentro de ``timeout_seg``.
+    Fase de wake para ``--wake-turn``: primera detección y salida.
 
-    Si hay audio de confirmación, se reproduce de forma **bloqueante** antes de
-    devolver, para no solapar con la grabación de la orden.
+    A diferencia de ``ejecutar_escucha_openwakeword`` (escucha continua con logs),
+    aquí el hilo principal **espera una sola** activación y devuelve. La inferencia
+    corre en un hilo auxiliar para no bloquear el callback de PortAudio.
+
+    Si ``ruta_audio_wake`` apunta a un WAV existente, se reproduce en **bloqueante**
+    antes de devolver, para que la grabación de la orden no se solape con el beep.
 
     Returns:
-        ``(clave_modelo, score)`` o ``None`` si vence el tiempo sin detección.
+        ``(clave_modelo, score)`` o ``None`` si vence ``timeout_seg`` sin detección.
     """
+    # --- Validación de parámetros (mismos criterios que escucha prolongada) ---
     if timeout_seg <= 0:
         raise ValueError("timeout_seg debe ser > 0")
-    _ = frase_objetivo_producto  # reservado para alinear API con ``ejecutar_escucha_openwakeword``
+    _ = frase_objetivo_producto  # solo UX/documentación; OWW usa los ONNX de ``modelos``
     if inferencia not in ("onnx", "tflite"):
         raise ValueError('inferencia debe ser "onnx" o "tflite"')
     if umbral < 0 or umbral > 1:
@@ -423,6 +436,7 @@ def esperar_primera_activacion_wake(
     if rebote_segundos < 0:
         raise ValueError("rebote_segundos debe ser >= 0")
 
+    # --- Carga de pesos y modelo openWakeWord ---
     asegurar_modelos_openwakeword(modelos)
     _, Model, _ = _import_openwakeword()
 
@@ -432,6 +446,7 @@ def esperar_primera_activacion_wake(
         vad_threshold=float(vad_umbral),
     )
 
+    # Tasa real del mic; si no es 16 kHz, ``_EstadoWakeStream`` remuestrea antes de OWW.
     tasa_efectiva = resolver_tasa_muestreo_entrada(
         dispositivo,
         int(tasa_muestreo_solicitada_hz),
@@ -443,16 +458,19 @@ def esperar_primera_activacion_wake(
             "se remuestrea a 16 kHz antes de OWW."
         )
 
+    # --- Estado compartido: buffer de audio + cola de eventos de wake detectados ---
     buf = _EstadoWakeStream(tasa_hz=int(tasa_efectiva))
     rebote_lock = threading.Lock()
     ultima_activacion_mono: list[float] = [-1e9]
     eventos_wake: queue.SimpleQueue[tuple[str, float]] = queue.SimpleQueue()
 
+    # Cola entre callback (rápido) e hilo de inferencia (puede tardar en Pi).
     _COLA_INFERENCIA_MAX = 16
     infer_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=_COLA_INFERENCIA_MAX)
     stop_infer = threading.Event()
 
     def _encolar_pcm_oww(pcm: np.ndarray) -> None:
+        """Encola una ventana PCM; si la cola está llena, descarta la más antigua."""
         try:
             infer_queue.put_nowait(pcm)
         except queue.Full:
@@ -466,6 +484,12 @@ def esperar_primera_activacion_wake(
                 pass
 
     def _hilo_inferencia_silenciosa() -> None:
+        """
+        Consume ventanas de la cola y llama a ``modelo.predict``.
+
+        Sin prints por score (a diferencia de ``--wake-listen``): solo publica
+        en ``eventos_wake`` cuando score >= umbral y pasó el rebote.
+        """
         while True:
             try:
                 pcm = infer_queue.get(timeout=0.08)
@@ -504,6 +528,7 @@ def esperar_primera_activacion_wake(
     )
     infer_thread.start()
 
+    # Audio de confirmación (p. ej. wake_hola.wav); se reproduce al final si hubo hit.
     wake_audio: tuple[np.ndarray, int] | None = None
     if ruta_audio_wake:
         ruta_wake = Path(ruta_audio_wake)
@@ -516,6 +541,7 @@ def esperar_primera_activacion_wake(
             print(f"Aviso: no existe el audio de wake en {ruta_wake}.")
 
     def callback(indata: np.ndarray, frames: int, _t, status: object) -> None:
+        """PortAudio: convierte cada bloque a ventanas OWW y las encola para inferencia."""
         del frames
         if status:
             pass
@@ -532,6 +558,7 @@ def esperar_primera_activacion_wake(
         callback=callback,
     )
 
+    # --- Bucle principal: esperar la primera activación dentro del timeout ---
     resultado: tuple[str, float] | None = None
     try:
         with stream:
@@ -546,6 +573,7 @@ def esperar_primera_activacion_wake(
                     time.sleep(0.02)
             stream.stop()
     finally:
+        # Apagar hilo de inferencia de forma ordenada (sentinela None en la cola).
         stop_infer.set()
         while True:
             try:
@@ -561,6 +589,7 @@ def esperar_primera_activacion_wake(
     if resultado is None:
         return None
     clave, score = resultado
+    # Beep de confirmación **antes** de que el pipeline abra otra grabación.
     if wake_audio is not None:
         audio, sr = wake_audio
         sd.play(audio, samplerate=sr, blocking=True)

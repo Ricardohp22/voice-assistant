@@ -50,7 +50,12 @@ from voice_assistant import config
 
 
 def _dispositivo_entrada_resuelto() -> int | None:
-    """Índice PortAudio según ``config`` (nombre tiene prioridad sobre índice)."""
+    """
+    Índice PortAudio según ``config`` (nombre tiene prioridad sobre índice).
+
+    Usado por ``--wake-turn`` y el resto de comandos de audio para abrir siempre
+    el mismo micrófono que el operador configuró en ``config.py``.
+    """
     return resolver_dispositivo_entrada(
         config.MIC_NOMBRE_CONTIENE,
         config.DISPOSITIVO_ENTRADA,
@@ -128,16 +133,23 @@ def _cmd_test_oracion(oracion: str) -> None:
 
 
 def _cmd_wake_turn() -> None:
-    """Un ciclo: esperar wake → grabar orden → STT local → catálogo de intenciones → acción."""
+    """
+    Punto de entrada CLI para ``--wake-turn``.
+
+    No contiene lógica de negocio: resuelve el micrófono y delega en
+    ``ejecutar_turno_wake_grabar_stt_intent`` (pipeline). Todos los tiempos,
+    modelos y rutas vienen de ``config.py`` para que un colaborador ajuste
+    el comportamiento sin tocar este archivo.
+    """
+    # Mismo criterio de micrófono que --test-record o --wake-listen.
     dev = _dispositivo_entrada_resuelto()
     print(f"Dispositivo: {describir_dispositivo_entrada(dev)}")
+
+    # Orquestación del turno (wake → grabar → STT → intención → acción).
     ejecutar_turno_wake_grabar_stt_intent(
         dispositivo_entrada=dev,
+        # --- Espera de wake (openWakeWord) ---
         timeout_espera_wake_seg=config.WAKE_TURN_TIMEOUT_SEG,
-        silencio_post_wake_seg=config.POST_WAKE_SILENCIO_SEG,
-        duracion_grabacion_orden_seg=config.POST_WAKE_GRABAR_ORDEN_SEG,
-        tasa_muestreo_hz=config.TASA_MUESTREO_HZ,
-        canales=config.CANALES,
         modelos_wake=list(config.OPENWAKEWORD_MODELOS),
         frase_activacion=config.FRASE_ACTIVACION,
         umbral_wake=config.OPENWAKEWORD_UMBRAL,
@@ -146,14 +158,21 @@ def _cmd_wake_turn() -> None:
         vad_umbral_wake=config.OPENWAKEWORD_VAD_UMBRAL,
         blocksize_wake=config.OPENWAKEWORD_BLOQUE_STREAM_MUESTRAS,
         ruta_audio_confirmacion_wake=config.OPENWAKEWORD_AUDIO_CONFIRMACION,
-        catalogo_intenciones_ruta=config.CATALOGO_INTENCIONES_RUTA,
+        # --- Captura de la orden tras el wake ---
+        silencio_post_wake_seg=config.POST_WAKE_SILENCIO_SEG,
+        duracion_grabacion_orden_seg=config.POST_WAKE_GRABAR_ORDEN_SEG,
+        tasa_muestreo_hz=config.TASA_MUESTREO_HZ,
+        canales=config.CANALES,
+        tasa_salida_pipeline_hz=config.TASA_SALIDA_PIPELINE_HZ,
+        carpeta_grabaciones=config.CARPETA_GRABACIONES,
+        guardar_wav_debug=config.WAKE_TURN_GUARDAR_WAV_DEBUG,
+        # --- STT local (faster-whisper) ---
         whisper_modelo=config.WHISPER_MODELO,
         whisper_dispositivo=config.WHISPER_DISPOSITIVO,
         whisper_tipo_computo=config.WHISPER_TIPO_COMPUTO,
         whisper_idioma=config.WHISPER_IDIOMA,
-        tasa_salida_pipeline_hz=config.TASA_SALIDA_PIPELINE_HZ,
-        carpeta_grabaciones=config.CARPETA_GRABACIONES,
-        guardar_wav_debug=config.WAKE_TURN_GUARDAR_WAV_DEBUG,
+        # --- Catálogo de intenciones post-wake ---
+        catalogo_intenciones_ruta=config.CATALOGO_INTENCIONES_RUTA,
     )
 
 

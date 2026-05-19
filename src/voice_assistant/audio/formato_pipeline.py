@@ -58,12 +58,18 @@ def preparar_muestras_para_stt(
     tasa_objetivo_hz: int,
 ) -> tuple[np.ndarray, int]:
     """
-    Devuelve (audio_mono_float32, tasa_objetivo_hz) listo para ``guardar_wav_mono``.
+    Puente entre la grabación de la orden y Whisper (fase 4 de ``--wake-turn``).
+
+    Convierte a mono float32 y remuestrea a ``tasa_objetivo_hz`` (típ. 16 kHz).
+    Ese array es el que consume ``transcribir_float32_16khz``.
 
     Args:
         muestras: float32 tal como devuelve ``grabar_muestras``.
         tasa_grabacion_hz: tasa real de la grabación (p. ej. 48000 si el USB no acepta 16 k).
-        tasa_objetivo_hz: tasa del WAV de salida (habitualmente 16000 para STT).
+        tasa_objetivo_hz: tasa para STT (``config.TASA_SALIDA_PIPELINE_HZ``).
+
+    Returns:
+        ``(audio_mono_float32, tasa_objetivo_hz)``
     """
     mono = mono_float32(muestras)
     out = remuestrear_mono_lineal(mono, tasa_grabacion_hz, tasa_objetivo_hz)

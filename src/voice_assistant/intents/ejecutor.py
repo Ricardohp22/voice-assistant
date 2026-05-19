@@ -1,4 +1,4 @@
-"""Ejecución de acciones declaradas en el catálogo de intenciones."""
+"""Ejecución de acciones declaradas en el catálogo de intenciones (fase final de ``--wake-turn``)."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .catalogo import raiz_repositorio
 
 
 def _resolver_ruta_audio(ruta: str) -> Path:
+    """Rutas del JSON son relativas a la raíz del repo salvo que sean absolutas."""
     p = Path(ruta)
     if p.is_absolute():
         return p
@@ -21,10 +22,18 @@ def _resolver_ruta_audio(ruta: str) -> Path:
 
 def ejecutar_accion(accion: dict[str, Any], *, bloqueante: bool = False) -> None:
     """
-    Ejecuta ``accion`` (campos ``tipo`` y ``parametros``).
+    Ejecuta la acción elegida tras ``emparejar_intencion``.
+
+    El catálogo define ``tipo`` y ``parametros``. Hoy solo está implementado
+    ``reproducir_audio`` (WAV de respuesta, p. ej. ``audio_messages/saludo.wav``).
+
+    Args:
+        accion: dict con al menos ``tipo`` y ``parametros``.
+        bloqueante: si True, ``sd.play`` espera a que termine el audio (recomendado en CLI).
 
     Raises:
         ValueError: tipo no soportado o parámetros inválidos.
+        FileNotFoundError: WAV de respuesta inexistente.
     """
     tipo = str(accion.get("tipo", "")).strip()
     params = accion.get("parametros") or {}
