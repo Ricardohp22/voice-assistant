@@ -12,3 +12,4 @@ src/voice_assistant/__pycache__/
 src/voice_assistant/wake/__pycache__/
 src/voice_assistant/audio/__pycache__/
 src/voice_assistant/intents/__pycache__/
+**/*.pyc

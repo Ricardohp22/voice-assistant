@@ -53,7 +53,7 @@ Limitación conocida: subcadenas muy cortas pueden dar falsos positivos; convien
 
 | `tipo` | `parametros` | Comportamiento |
 |--------|----------------|------------------|
-| `reproducir_audio` | `ruta` (string, relativa a la raíz del repo) | Reproduce el WAV por el dispositivo de salida por defecto (`sounddevice`). |
+| `reproducir_audio` | `ruta` (string); opcional `mensaje_consola` | Imprime el mensaje si viene definido; reproduce el WAV (`sounddevice`). Si falta el archivo, avisa y no lanza error. |
 
 Más tipos (`http_get`, `gpio`, `mqtt`, …) se pueden añadir en el mismo JSON cuando exista el ejecutor en código.
 
@@ -62,10 +62,16 @@ Más tipos (`http_get`, `gpio`, `mqtt`, …) se pueden añadir en el mismo JSON 
 - **Disparadores**: “hola”, “buen día”, “salúdame”, etc. (ver lista en el JSON).
 - **Acción**: `audio_messages/saludo.wav`.
 
+## Intención: `nueva_reunion`
+
+- **Disparadores**: “nueva reunión”, “crea una nueva reunión”, “agenda una reunión”, etc. (ver JSON).
+- **Acción**: imprime `Creando nueva reunion...` y reproduce `audio_messages/new_reunion.wav`.
+
 ## Prueba local sin micrófono
 
 ```bash
 python main.py --test-oracion "Hex vox device hola"
+python main.py --test-oracion "Hey vox device crea una nueva reunion"
 python main.py --list-intents
 ```
 

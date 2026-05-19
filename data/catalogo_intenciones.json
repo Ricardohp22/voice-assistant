@@ -37,6 +37,40 @@
           "ruta": "audio_messages/saludo.wav"
         }
       }
+    },
+    {
+      "id": "nueva_reunion",
+      "titulo": "Nueva reunión",
+      "descripcion": "Crear o agendar una nueva reunión; disparadores cubren variantes habituales en español.",
+      "prioridad": 20,
+      "disparadores": {
+        "contiene_alguna": [
+          "nueva reunion",
+          "nueva reunión",
+          "crea una nueva reunion",
+          "crear una nueva reunion",
+          "crea una reunion",
+          "crear una reunion",
+          "crea nueva reunion",
+          "crear nueva reunion",
+          "necesito una nueva reunion",
+          "necesito una reunion",
+          "agenda una reunion",
+          "agendar una reunion",
+          "programa una reunion",
+          "programar una reunion",
+          "quiero una reunion",
+          "inicia una reunion",
+          "empezar una reunion"
+        ]
+      },
+      "accion": {
+        "tipo": "reproducir_audio",
+        "parametros": {
+          "mensaje_consola": "Creando nueva reunion...",
+          "ruta": "audio_messages/new_reunion.wav"
+        }
+      }
     }
   ]
 }

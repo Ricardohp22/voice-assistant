@@ -67,7 +67,7 @@ CATALOGO_INTENCIONES_RUTA: str = "data/catalogo_intenciones.json"
 
 # --- Turno completo: wake → grabar → Whisper → intención (pipeline) ---
 WAKE_TURN_TIMEOUT_SEG: float = 120.0
-POST_WAKE_SILENCIO_SEG: float = 0.35
+POST_WAKE_SILENCIO_SEG: float = 0
 POST_WAKE_GRABAR_ORDEN_SEG: float = 5.0
 # Si True, guarda un WAV de la orden en CARPETA_GRABACIONES tras el wake.
 WAKE_TURN_GUARDAR_WAV_DEBUG: bool = False

@@ -20,6 +20,7 @@ from voice_assistant.audio.capture import grabar_muestras, guardar_wav_mono
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
 from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_accion
 from voice_assistant.stt import transcribir_float32_16khz
+from voice_assistant.config_theme import COLOR
 from voice_assistant.wake import esperar_primera_activacion_wake
 
 
@@ -93,7 +94,7 @@ def ejecutar_turno_wake_grabar_stt_intent(
     # Fase 3: grabación bloqueante de la orden del usuario
     # -------------------------------------------------------------------------
     # ``grabar_muestras`` abre de nuevo el micrófono (stream distinto al del wake).
-    print(f"Grabando orden ({duracion_grabacion_orden_seg:.1f} s)...")
+    print(f"{COLOR['rojo']}Grabando orden ({duracion_grabacion_orden_seg:.1f} s)...{COLOR['reset']}")
     muestras, tasa_efectiva = grabar_muestras(
         duracion_grabacion_orden_seg,
         dispositivo=dispositivo_entrada,

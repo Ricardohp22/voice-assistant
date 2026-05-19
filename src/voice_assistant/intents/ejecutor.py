@@ -25,7 +25,7 @@ def ejecutar_accion(accion: dict[str, Any], *, bloqueante: bool = False) -> None
     Ejecuta la acción elegida tras ``emparejar_intencion``.
 
     El catálogo define ``tipo`` y ``parametros``. Hoy solo está implementado
-    ``reproducir_audio`` (WAV de respuesta, p. ej. ``audio_messages/saludo.wav``).
+    ``reproducir_audio`` (WAV de respuesta; opcional ``mensaje_consola`` antes).
 
     Args:
         accion: dict con al menos ``tipo`` y ``parametros``.
@@ -41,12 +41,19 @@ def ejecutar_accion(accion: dict[str, Any], *, bloqueante: bool = False) -> None
         raise ValueError("parametros debe ser un objeto")
 
     if tipo == "reproducir_audio":
+        mensaje = params.get("mensaje_consola")
+        if mensaje is not None:
+            texto = str(mensaje).strip()
+            if texto:
+                print(texto)
+
         ruta = str(params.get("ruta", "")).strip()
         if not ruta:
             raise ValueError("reproducir_audio requiere parametros.ruta")
         archivo = _resolver_ruta_audio(ruta)
         if not archivo.is_file():
-            raise FileNotFoundError(f"No existe el audio: {archivo}")
+            print(f"Aviso: no existe el audio {archivo}; omitiendo reproducción.")
+            return
         audio, sr = cargar_wav_pcm16_mono_float32(archivo)
         sd.play(audio, samplerate=sr, blocking=bloqueante)
         return
