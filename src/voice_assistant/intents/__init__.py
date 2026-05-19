@@ -1,4 +1,4 @@
-"""Enrutamiento local de intenciones tras el wakeup (catálogo JSON)."""
+"""Enrutamiento local de intenciones tras el wakeup (catálogo JSON + manejadores en código)."""
 
 from .catalogo import (
     ResultadoEmpareo,
@@ -6,12 +6,12 @@ from .catalogo import (
     emparejar_intencion,
     raiz_repositorio,
 )
-from .ejecutor import ejecutar_accion
+from .manejadores import ejecutar_intencion
 
 __all__ = [
     "ResultadoEmpareo",
     "cargar_catalogo",
     "emparejar_intencion",
-    "ejecutar_accion",
+    "ejecutar_intencion",
     "raiz_repositorio",
 ]

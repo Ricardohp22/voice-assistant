@@ -7,7 +7,7 @@ Secuencia:
   3. ``grabar_muestras`` — ventana fija para la orden del usuario.
   4. ``preparar_muestras_para_stt`` — mono 16 kHz para Whisper.
   5. ``transcribir_float32_16khz`` — texto de la orden.
-  6. ``emparejar_intencion`` + ``ejecutar_accion`` — catálogo JSON local.
+  6. ``emparejar_intencion`` + ``ejecutar_intencion`` — catálogo JSON + manejadores en código.
 
 Ver también ``docs/wake_turn.md``.
 """
@@ -18,7 +18,7 @@ import time
 
 from voice_assistant.audio.capture import grabar_muestras, guardar_wav_mono
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
-from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_accion
+from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_intencion
 from voice_assistant.stt import transcribir_float32_16khz
 from voice_assistant.config_theme import COLOR
 from voice_assistant.wake import esperar_primera_activacion_wake
@@ -132,7 +132,7 @@ def ejecutar_turno_wake_grabar_stt_intent(
     print(f"STT: {texto!r}")
 
     # -------------------------------------------------------------------------
-    # Fase 6: emparejar contra el catálogo y ejecutar la acción asociada
+    # Fase 6: emparejar en JSON y ejecutar manejador por ``id`` (ver manejadores.py)
     # -------------------------------------------------------------------------
     cat = cargar_catalogo(catalogo_intenciones_ruta)
     hit = emparejar_intencion(cat, texto)
@@ -143,5 +143,4 @@ def ejecutar_turno_wake_grabar_stt_intent(
         f"Intención: {hit.intencion_id} ({hit.intencion_titulo}) "
         f"disparador={hit.disparador!r} | tras_wake={hit.texto_tras_wake!r}"
     )
-    # ``bloqueante=True`` evita que el proceso termine antes de oír el WAV de respuesta.
-    ejecutar_accion(hit.accion, bloqueante=True)
+    ejecutar_intencion(hit.intencion_id, bloqueante=True)

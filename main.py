@@ -43,7 +43,7 @@ from voice_assistant.audio.dispositivo import (
 )
 from voice_assistant.audio.captura_continua import ejecutar_escucha_continua
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
-from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_accion
+from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_intencion
 from voice_assistant.pipeline import ejecutar_turno_wake_grabar_stt_intent
 from voice_assistant.wake import ejecutar_escucha_openwakeword
 from voice_assistant import config
@@ -119,7 +119,7 @@ def _cmd_list_intents() -> None:
 
 
 def _cmd_test_oracion(oracion: str) -> None:
-    """Empareja una oración contra el catálogo local y ejecuta la acción (p. ej. saludo por WAV)."""
+    """Empareja una oración contra el catálogo y ejecuta el manejador del ``id`` detectado."""
     cat = cargar_catalogo(config.CATALOGO_INTENCIONES_RUTA)
     hit = emparejar_intencion(cat, oracion)
     if hit is None:
@@ -129,7 +129,7 @@ def _cmd_test_oracion(oracion: str) -> None:
         f"Intención: {hit.intencion_id} ({hit.intencion_titulo}) "
         f"disparador={hit.disparador!r} | tras_wake={hit.texto_tras_wake!r}"
     )
-    ejecutar_accion(hit.accion, bloqueante=True)
+    ejecutar_intencion(hit.intencion_id, bloqueante=True)
 
 
 def _cmd_wake_turn() -> None:

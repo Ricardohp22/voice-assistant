@@ -51,13 +51,12 @@ def quitar_prefijos_wake(texto_norm: str, prefijos: list[str]) -> str:
 
 @dataclass(frozen=True)
 class ResultadoEmpareo:
-    """Intención elegida y metadatos útiles para logs."""
+    """Intención elegida y metadatos útiles para logs y despacho en ``manejadores``."""
 
     intencion_id: str
     intencion_titulo: str
     disparador: str
     texto_tras_wake: str
-    accion: dict[str, Any]
 
 
 def cargar_catalogo(ruta_relativa_o_absoluta: str | Path) -> dict[str, Any]:
@@ -84,7 +83,7 @@ def emparejar_intencion(catalogo: dict[str, Any], oracion: str) -> ResultadoEmpa
       4. Si varias coinciden: gana el disparador **más largo**; empate → mayor ``prioridad``.
 
     Returns:
-        ``ResultadoEmpareo`` con la acción a ejecutar, o ``None`` si no hay match.
+        ``ResultadoEmpareo`` con el ``id`` a despachar en código, o ``None`` si no hay match.
     """
     norm = normalizar_oracion(oracion)
     prefijos = list(catalogo.get("prefijos_wake") or [])
@@ -113,11 +112,9 @@ def emparejar_intencion(catalogo: dict[str, Any], oracion: str) -> ResultadoEmpa
     if mejor is None:
         return None
     _, _, intent, disparador_crudo = mejor
-    accion = intent.get("accion") or {}
     return ResultadoEmpareo(
         intencion_id=str(intent["id"]),
         intencion_titulo=str(intent.get("titulo", intent["id"])),
         disparador=str(disparador_crudo),
         texto_tras_wake=tras_wake,
-        accion=accion if isinstance(accion, dict) else {},
     )

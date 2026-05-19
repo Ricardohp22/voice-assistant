@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "descripcion": "Catálogo de intenciones tras el wakeup. Tras STT (o prueba con --test-oracion) se normaliza el texto, se quitan prefijos de wake y se busca la primera intención que cumpla disparadores.",
+  "descripcion": "Catálogo de intenciones tras el wakeup: solo identificación (prefijos, disparadores, prioridad). La ejecución por id vive en src/voice_assistant/intents/manejadores.py.",
   "prefijos_wake": [
     "hey vox device",
     "hex vox device",
@@ -11,7 +11,7 @@
     {
       "id": "saludar",
       "titulo": "Saludo",
-      "descripcion": "Saludo breve por audio; disparadores orientados a formas habituales en español.",
+      "descripcion": "Saludo breve; disparadores orientados a formas habituales en español.",
       "prioridad": 10,
       "disparadores": {
         "contiene_alguna": [
@@ -30,12 +30,6 @@
           "como estas",
           "cómo estás"
         ]
-      },
-      "accion": {
-        "tipo": "reproducir_audio",
-        "parametros": {
-          "ruta": "audio_messages/saludo.wav"
-        }
       }
     },
     {
@@ -63,13 +57,6 @@
           "inicia una reunion",
           "empezar una reunion"
         ]
-      },
-      "accion": {
-        "tipo": "reproducir_audio",
-        "parametros": {
-          "mensaje_consola": "Creando nueva reunion...",
-          "ruta": "audio_messages/new_reunion.wav"
-        }
       }
     }
   ]
