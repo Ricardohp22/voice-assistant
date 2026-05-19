@@ -387,3 +387,181 @@ def ejecutar_escucha_openwakeword(
         infer_thread.join(timeout=5.0)
 
     print(f"Fin escucha wake ({time.perf_counter() - t0:.1f} s reloj).")
+
+
+def esperar_primera_activacion_wake(
+    timeout_seg: float,
+    *,
+    dispositivo: int | None,
+    tasa_muestreo_solicitada_hz: int,
+    canales: int,
+    modelos: Sequence[str],
+    frase_objetivo_producto: str,
+    umbral: float,
+    rebote_segundos: float,
+    inferencia: str,
+    vad_umbral: float,
+    blocksize: int | None,
+    ruta_audio_wake: str | Path | None,
+) -> tuple[str, float] | None:
+    """
+    Abre el micrófono y devuelve la **primera** activación de wake dentro de ``timeout_seg``.
+
+    Si hay audio de confirmación, se reproduce de forma **bloqueante** antes de
+    devolver, para no solapar con la grabación de la orden.
+
+    Returns:
+        ``(clave_modelo, score)`` o ``None`` si vence el tiempo sin detección.
+    """
+    if timeout_seg <= 0:
+        raise ValueError("timeout_seg debe ser > 0")
+    _ = frase_objetivo_producto  # reservado para alinear API con ``ejecutar_escucha_openwakeword``
+    if inferencia not in ("onnx", "tflite"):
+        raise ValueError('inferencia debe ser "onnx" o "tflite"')
+    if umbral < 0 or umbral > 1:
+        raise ValueError("umbral debe estar en [0, 1]")
+    if rebote_segundos < 0:
+        raise ValueError("rebote_segundos debe ser >= 0")
+
+    asegurar_modelos_openwakeword(modelos)
+    _, Model, _ = _import_openwakeword()
+
+    modelo = Model(
+        wakeword_models=list(modelos),
+        inference_framework=inferencia,
+        vad_threshold=float(vad_umbral),
+    )
+
+    tasa_efectiva = resolver_tasa_muestreo_entrada(
+        dispositivo,
+        int(tasa_muestreo_solicitada_hz),
+        canales=int(canales),
+    )
+    if tasa_efectiva != tasa_muestreo_solicitada_hz:
+        print(
+            f"Aviso: wake a {tasa_efectiva} Hz (solicitado {tasa_muestreo_solicitada_hz} Hz); "
+            "se remuestrea a 16 kHz antes de OWW."
+        )
+
+    buf = _EstadoWakeStream(tasa_hz=int(tasa_efectiva))
+    rebote_lock = threading.Lock()
+    ultima_activacion_mono: list[float] = [-1e9]
+    eventos_wake: queue.SimpleQueue[tuple[str, float]] = queue.SimpleQueue()
+
+    _COLA_INFERENCIA_MAX = 16
+    infer_queue: queue.Queue[np.ndarray | None] = queue.Queue(maxsize=_COLA_INFERENCIA_MAX)
+    stop_infer = threading.Event()
+
+    def _encolar_pcm_oww(pcm: np.ndarray) -> None:
+        try:
+            infer_queue.put_nowait(pcm)
+        except queue.Full:
+            try:
+                infer_queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                infer_queue.put_nowait(pcm)
+            except queue.Full:
+                pass
+
+    def _hilo_inferencia_silenciosa() -> None:
+        while True:
+            try:
+                pcm = infer_queue.get(timeout=0.08)
+            except queue.Empty:
+                if stop_infer.is_set():
+                    break
+                continue
+            if pcm is None:
+                break
+            try:
+                pred = modelo.predict(pcm)
+            except Exception as exc:  # pragma: no cover
+                print(f"[WAKE] error en inferencia: {exc}")
+                continue
+            ahora = time.monotonic()
+            for clave, valor in pred.items():
+                arr = np.ravel(np.asarray(valor))
+                if arr.size != 1:
+                    continue
+                try:
+                    score = float(arr[0])
+                except (TypeError, ValueError):
+                    continue
+                if score < umbral:
+                    continue
+                with rebote_lock:
+                    if ahora - ultima_activacion_mono[0] < rebote_segundos:
+                        continue
+                    ultima_activacion_mono[0] = ahora
+                eventos_wake.put((str(clave), score))
+
+    infer_thread = threading.Thread(
+        target=_hilo_inferencia_silenciosa,
+        name="openWakeWord-infer-once",
+        daemon=True,
+    )
+    infer_thread.start()
+
+    wake_audio: tuple[np.ndarray, int] | None = None
+    if ruta_audio_wake:
+        ruta_wake = Path(ruta_audio_wake)
+        if ruta_wake.exists():
+            try:
+                wake_audio = cargar_wav_pcm16_mono_float32(ruta_wake)
+            except Exception as exc:
+                print(f"Aviso: no se pudo cargar audio de wake {ruta_wake}: {exc}")
+        else:
+            print(f"Aviso: no existe el audio de wake en {ruta_wake}.")
+
+    def callback(indata: np.ndarray, frames: int, _t, status: object) -> None:
+        del frames
+        if status:
+            pass
+        for pcm in buf.extraer_bloques_pcm16(indata):
+            _encolar_pcm_oww(pcm)
+
+    stream = sd.InputStream(
+        samplerate=int(tasa_efectiva),
+        blocksize=blocksize if blocksize is not None and blocksize > 0 else None,
+        device=dispositivo,
+        channels=int(canales),
+        dtype="float32",
+        latency="low",
+        callback=callback,
+    )
+
+    resultado: tuple[str, float] | None = None
+    try:
+        with stream:
+            stream.start()
+            deadline = time.perf_counter() + timeout_seg
+            while time.perf_counter() < deadline:
+                try:
+                    clave, score = eventos_wake.get_nowait()
+                    resultado = (clave, score)
+                    break
+                except queue.Empty:
+                    time.sleep(0.02)
+            stream.stop()
+    finally:
+        stop_infer.set()
+        while True:
+            try:
+                infer_queue.put_nowait(None)
+                break
+            except queue.Full:
+                try:
+                    infer_queue.get_nowait()
+                except queue.Empty:
+                    break
+        infer_thread.join(timeout=5.0)
+
+    if resultado is None:
+        return None
+    clave, score = resultado
+    if wake_audio is not None:
+        audio, sr = wake_audio
+        sd.play(audio, samplerate=sr, blocking=True)
+    return (clave, score)

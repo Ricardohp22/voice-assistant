@@ -2,6 +2,8 @@
 
 Este documento describe **qué puede hacer el dispositivo** después de detectar la wake word, **cómo se decide** la acción y **dónde editarlo**. El archivo que realmente consume el código es el **catálogo JSON**; este Markdown sirve como guía humana.
 
+Para el **pipeline completo en un solo comando** (wake → grabar → Whisper → catálogo → acción), véase [Turno completo: `--wake-turn`](wake_turn.md).
+
 ## Flujo resumido
 
 1. **Wakeup** (openWakeWord u otro motor).

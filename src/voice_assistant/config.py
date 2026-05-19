@@ -64,3 +64,15 @@ OPENWAKEWORD_AUDIO_CONFIRMACION: str = "audio_messages/wake_hola.wav"
 
 # Catálogo de intenciones post-wakeup (JSON relativo a la raíz del repositorio).
 CATALOGO_INTENCIONES_RUTA: str = "data/catalogo_intenciones.json"
+
+# --- Turno completo: wake → grabar → Whisper → intención (pipeline) ---
+WAKE_TURN_TIMEOUT_SEG: float = 120.0
+POST_WAKE_SILENCIO_SEG: float = 0.35
+POST_WAKE_GRABAR_ORDEN_SEG: float = 5.0
+# Si True, guarda un WAV de la orden en CARPETA_GRABACIONES tras el wake.
+WAKE_TURN_GUARDAR_WAV_DEBUG: bool = False
+
+WHISPER_MODELO: str = "tiny"
+WHISPER_DISPOSITIVO: str = "cpu"
+WHISPER_TIPO_COMPUTO: str = "int8"
+WHISPER_IDIOMA: str = "es"

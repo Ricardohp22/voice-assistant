@@ -16,6 +16,7 @@ Instalar el paquete en modo editable (recomendado; así ``python main.py`` encue
     python main.py --wake-listen 0
     python main.py --list-intents
     python main.py --test-oracion "Hex vox device hola"
+    python main.py --wake-turn
 
 Alternativa sin instalar: ``PYTHONPATH=src python main.py ...``
 
@@ -43,6 +44,7 @@ from voice_assistant.audio.dispositivo import (
 from voice_assistant.audio.captura_continua import ejecutar_escucha_continua
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
 from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_accion
+from voice_assistant.pipeline import ejecutar_turno_wake_grabar_stt_intent
 from voice_assistant.wake import ejecutar_escucha_openwakeword
 from voice_assistant import config
 
@@ -123,6 +125,36 @@ def _cmd_test_oracion(oracion: str) -> None:
         f"disparador={hit.disparador!r} | tras_wake={hit.texto_tras_wake!r}"
     )
     ejecutar_accion(hit.accion, bloqueante=True)
+
+
+def _cmd_wake_turn() -> None:
+    """Un ciclo: esperar wake → grabar orden → STT local → catálogo de intenciones → acción."""
+    dev = _dispositivo_entrada_resuelto()
+    print(f"Dispositivo: {describir_dispositivo_entrada(dev)}")
+    ejecutar_turno_wake_grabar_stt_intent(
+        dispositivo_entrada=dev,
+        timeout_espera_wake_seg=config.WAKE_TURN_TIMEOUT_SEG,
+        silencio_post_wake_seg=config.POST_WAKE_SILENCIO_SEG,
+        duracion_grabacion_orden_seg=config.POST_WAKE_GRABAR_ORDEN_SEG,
+        tasa_muestreo_hz=config.TASA_MUESTREO_HZ,
+        canales=config.CANALES,
+        modelos_wake=list(config.OPENWAKEWORD_MODELOS),
+        frase_activacion=config.FRASE_ACTIVACION,
+        umbral_wake=config.OPENWAKEWORD_UMBRAL,
+        rebote_wake_seg=config.OPENWAKEWORD_REBOTE_SEG,
+        inferencia_wake=config.OPENWAKEWORD_INFERENCIA,
+        vad_umbral_wake=config.OPENWAKEWORD_VAD_UMBRAL,
+        blocksize_wake=config.OPENWAKEWORD_BLOQUE_STREAM_MUESTRAS,
+        ruta_audio_confirmacion_wake=config.OPENWAKEWORD_AUDIO_CONFIRMACION,
+        catalogo_intenciones_ruta=config.CATALOGO_INTENCIONES_RUTA,
+        whisper_modelo=config.WHISPER_MODELO,
+        whisper_dispositivo=config.WHISPER_DISPOSITIVO,
+        whisper_tipo_computo=config.WHISPER_TIPO_COMPUTO,
+        whisper_idioma=config.WHISPER_IDIOMA,
+        tasa_salida_pipeline_hz=config.TASA_SALIDA_PIPELINE_HZ,
+        carpeta_grabaciones=config.CARPETA_GRABACIONES,
+        guardar_wav_debug=config.WAKE_TURN_GUARDAR_WAV_DEBUG,
+    )
 
 
 def _cmd_wake_listen(duracion: float) -> None:
@@ -286,6 +318,11 @@ def main() -> None:
         metavar="TEXTO",
         help='Prueba emparejo local + acción (ej.: --test-oracion "Hex vox device hola")',
     )
+    parser.add_argument(
+        "--wake-turn",
+        action="store_true",
+        help="Un turno: wake → grabar orden → Whisper local → intención (ver config WAKE_TURN_*, WHISPER_*)",
+    )
     args = parser.parse_args()
 
     if args.list_devices:
@@ -306,6 +343,10 @@ def main() -> None:
 
     if args.wake_listen is not None:
         _cmd_wake_listen(args.wake_listen)
+        return
+
+    if args.wake_turn:
+        _cmd_wake_turn()
         return
 
     if args.list_intents:

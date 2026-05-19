@@ -1,3 +1,10 @@
 venv
 .env
 recordings/
+# Archivos de bytes compilados
+*.pyc
+*.pyo
+*.pyd
+
+# Directorios de caché de Python
+__pycache__/

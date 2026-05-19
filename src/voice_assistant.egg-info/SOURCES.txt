@@ -11,5 +11,13 @@ src/voice_assistant/audio/captura_continua.py
 src/voice_assistant/audio/capture.py
 src/voice_assistant/audio/dispositivo.py
 src/voice_assistant/audio/formato_pipeline.py
+src/voice_assistant/audio/wav_io.py
+src/voice_assistant/intents/__init__.py
+src/voice_assistant/intents/catalogo.py
+src/voice_assistant/intents/ejecutor.py
+src/voice_assistant/pipeline/__init__.py
+src/voice_assistant/pipeline/turno_wake_stt_intent.py
+src/voice_assistant/stt/__init__.py
+src/voice_assistant/stt/whisper_local.py
 src/voice_assistant/wake/__init__.py
 src/voice_assistant/wake/openwakeword_stream.py
