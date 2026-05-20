@@ -76,3 +76,6 @@ WHISPER_MODELO: str = "tiny"
 WHISPER_DISPOSITIVO: str = "cpu"
 WHISPER_TIPO_COMPUTO: str = "int8"
 WHISPER_IDIOMA: str = "es"
+
+# Tras ``manejar_nueva_reunion``: segundos de escucha adicional para capturar datos (p. ej. nombre).
+NUEVA_REUNION_ESCUCHA_SEG: float = 5.0

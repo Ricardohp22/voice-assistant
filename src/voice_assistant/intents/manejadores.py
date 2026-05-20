@@ -15,11 +15,51 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from voice_assistant import config
+from voice_assistant.audio.capture import grabar_muestras
+from voice_assistant.audio.dispositivo import resolver_dispositivo_entrada
+from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
+from voice_assistant.stt import transcribir_float32_16khz
+
 from .ejecutor import reproducir_audio
 
 # Rutas de audio de respuesta (relativas a la raíz del repositorio).
 _AUDIO_SALUDO = "audio_messages/saludo.wav"
 _AUDIO_NUEVA_REUNION = "audio_messages/new_reunion.wav"
+
+# Última transcripción capturada en el flujo ``nueva_reunion`` (segunda escucha).
+transcripcion_seguimiento_nueva_reunion: str | None = None
+
+
+def _dispositivo_entrada() -> int | None:
+    """Micrófono según ``config`` (misma resolución que ``main.py``)."""
+    return resolver_dispositivo_entrada(
+        config.MIC_NOMBRE_CONTIENE,
+        config.DISPOSITIVO_ENTRADA,
+    )
+
+
+def _grabar_y_transcribir(duracion_seg: float) -> str:
+    """Graba ``duracion_seg`` s, normaliza a pipeline STT y devuelve el texto Whisper."""
+    print(f"Escuchando {duracion_seg:.0f} s...")
+    muestras, tasa_efectiva = grabar_muestras(
+        duracion_seg,
+        dispositivo=_dispositivo_entrada(),
+        tasa_muestreo_hz=config.TASA_MUESTREO_HZ,
+        canales=config.CANALES,
+    )
+    audio_16k, _ = preparar_muestras_para_stt(
+        muestras,
+        tasa_efectiva,
+        config.TASA_SALIDA_PIPELINE_HZ,
+    )
+    return transcribir_float32_16khz(
+        audio_16k,
+        modelo=config.WHISPER_MODELO,
+        dispositivo=config.WHISPER_DISPOSITIVO,
+        tipo_computo=config.WHISPER_TIPO_COMPUTO,
+        idioma=config.WHISPER_IDIOMA,
+    )
 
 
 def manejar_saludar(*, bloqueante: bool = True) -> None:
@@ -28,9 +68,20 @@ def manejar_saludar(*, bloqueante: bool = True) -> None:
 
 
 def manejar_nueva_reunion(*, bloqueante: bool = True) -> None:
-    """Intención ``nueva_reunion``: mensaje en consola y audio de confirmación."""
+    """
+    Intención ``nueva_reunion``: mensaje, audio de confirmación y segunda escucha.
+
+    Tras reproducir ``new_reunion.wav``, graba ``NUEVA_REUNION_ESCUCHA_SEG`` s y
+    guarda la transcripción en ``transcripcion_seguimiento_nueva_reunion``.
+    """
+    global transcripcion_seguimiento_nueva_reunion
+
     print("Creando nueva reunion...")
-    reproducir_audio(_AUDIO_NUEVA_REUNION, bloqueante=bloqueante)
+    # Siempre bloqueante antes del micrófono para no grabar encima del WAV de salida.
+    reproducir_audio(_AUDIO_NUEVA_REUNION, bloqueante=True)
+
+    transcripcion_seguimiento_nueva_reunion = _grabar_y_transcribir(config.NUEVA_REUNION_ESCUCHA_SEG)
+    print(f"Transcripción (seguimiento nueva reunión): {transcripcion_seguimiento_nueva_reunion!r}")
 
 
 ManejadorIntencion = Callable[..., None]

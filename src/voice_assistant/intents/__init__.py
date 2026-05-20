@@ -6,7 +6,7 @@ from .catalogo import (
     emparejar_intencion,
     raiz_repositorio,
 )
-from .manejadores import ejecutar_intencion
+from .manejadores import ejecutar_intencion, transcripcion_seguimiento_nueva_reunion
 
 __all__ = [
     "ResultadoEmpareo",
@@ -14,4 +14,5 @@ __all__ = [
     "emparejar_intencion",
     "ejecutar_intencion",
     "raiz_repositorio",
+    "transcripcion_seguimiento_nueva_reunion",
 ]
