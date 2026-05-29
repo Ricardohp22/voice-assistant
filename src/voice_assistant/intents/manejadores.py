@@ -17,8 +17,9 @@ from collections.abc import Callable
 
 from voice_assistant import config
 from voice_assistant.audio.capture import grabar_muestras
-from voice_assistant.audio.dispositivo import resolver_dispositivo_entrada
+from voice_assistant.audio.dispositivo import resolver_dispositivo_entrada_config
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
+from voice_assistant.integrations import publicar_solicitud_iniciar_reunion
 from voice_assistant.stt import transcribir_float32_16khz
 
 from .ejecutor import reproducir_audio
@@ -33,11 +34,8 @@ transcripcion_seguimiento_nueva_reunion: str | None = None
 
 
 def _dispositivo_entrada() -> int | None:
-    """Micrófono según ``config`` (misma resolución que ``main.py``)."""
-    return resolver_dispositivo_entrada(
-        config.MIC_NOMBRE_CONTIENE,
-        config.DISPOSITIVO_ENTRADA,
-    )
+    """Micrófono según ``config`` (p. ej. ALSA ``compartido`` / dsnoop)."""
+    return resolver_dispositivo_entrada_config()
 
 
 def _grabar_y_transcribir(duracion_seg: float) -> str:
@@ -85,10 +83,26 @@ def manejar_nueva_reunion(*, bloqueante: bool = True) -> None:
 
     ## Captura el nombre de la reunion y lo transcribe
     transcripcion_seguimiento_nueva_reunion = _grabar_y_transcribir(config.NUEVA_REUNION_ESCUCHA_SEG)
-    print(f"Nombre de la reunion: {transcripcion_seguimiento_nueva_reunion!r}")
+    nombre_reunion = (transcripcion_seguimiento_nueva_reunion or "").strip()
+    print(f"Nombre de la reunion: {nombre_reunion!r}")
+
+    if not nombre_reunion:
+        print("Aviso: no se capturó nombre; no se publica en Redis.")
+    else:
+        try:
+            solicitud_id = publicar_solicitud_iniciar_reunion(
+                nombre_reunion,
+                transcripcion=transcripcion_seguimiento_nueva_reunion,
+            )
+            print(
+                f"Redis: solicitud de reunión publicada (id={solicitud_id}, "
+                f"canal={config.REDIS_CANAL_REUNION_EVENTOS!r})."
+            )
+        except Exception as exc:
+            print(f"Error al publicar en Redis: {exc}")
 
     reproducir_audio(_AUDIO_SUCCESFUL_MEETING, bloqueante=True)
-    
+
 
 
 ManejadorIntencion = Callable[..., None]

@@ -7,16 +7,20 @@ de los índices, o dejar ``None`` y usar solo ``DISPOSITIVO_ENTRADA``.
 """
 
 # Si no es None ni cadena vacía, tiene prioridad: primer micrófono cuyo nombre PortAudio
-# contiene esta subcadena (sin distinguir mayúsculas). Valor por defecto acorde a mic USB.
-MIC_NOMBRE_CONTIENE: str | None = "USB"
-
-# Índice del dispositivo de entrada (sounddevice / PortAudio). Se usa si
-# ``MIC_NOMBRE_CONTIENE`` es None o vacío. None = predeterminado del sistema.
+# contiene esta subcadena (sin distinguir mayúsculas).
 #
-# Referencia ALSA: en ``arecord -l`` suele aparecer como card 0, device 0 → ``hw:0,0``.
-# PortAudio usa su propia numeración; con un solo mic USB suele coincidir el índice ``0``,
-# pero no está garantizado: use ``--list-devices`` si cambia el hardware.
-DISPOSITIVO_ENTRADA: int | None = 0
+# En Raspberry con ``pcm.compartido`` (dsnoop en /etc/asound.conf) use ``"compartido"``
+# para capturar en paralelo con Node.js sin bloquear ``hw:0,0``. Ver docs/alsa_mic_compartido.md.
+# No use ``"USB"`` / índice del hw directo si otro proceso también necesita el mic.
+MIC_NOMBRE_CONTIENE: str | None = "compartido"
+
+# Índice PortAudio; solo si ``MIC_NOMBRE_CONTIENE`` es None o vacío.
+# None = predeterminado del sistema (evitar si usa dsnoop: suele ser PipeWire ``default``).
+DISPOSITIVO_ENTRADA: int | None = None
+
+# Nombre del PCM ALSA definido en asound.conf (documentación / Node); PortAudio usa
+# ``MIC_NOMBRE_CONTIENE`` para elegir el dispositivo en Python.
+MIC_ALSA_PCM: str = "compartido"
 
 # Frecuencia de muestreo deseada en Hz (16 kHz es habitual en voz).
 # Si abres el micrófono USB como dispositivo ``hw`` (p. ej. índice 0) y el hardware
@@ -79,3 +83,17 @@ WHISPER_IDIOMA: str = "es"
 
 # Tras ``manejar_nueva_reunion``: segundos de escucha adicional para capturar datos (p. ej. nombre).
 NUEVA_REUNION_ESCUCHA_SEG: float = 5.0
+
+# --- Redis (comunicación con flujo Node.js en la misma Raspberry) ---
+REDIS_HABILITADO: bool = True
+REDIS_HOST: str = "127.0.0.1"
+REDIS_PORT: int = 6379
+REDIS_DB: int = 0
+REDIS_PASSWORD: str | None = None
+REDIS_SOCKET_TIMEOUT_SEG: float = 2.0
+# Pub/Sub: el proceso Node debe suscribirse a este canal para reacción inmediata.
+REDIS_CANAL_REUNION_EVENTOS: str = "vox:reunion:eventos"
+# Clave con el último JSON publicado (GET de respaldo; ver docs/redis_reunion_node.md).
+REDIS_CLAVE_ULTIMA_SOLICITUD: str = "vox:reunion:ultima_solicitud"
+# TTL de la clave de respaldo (0 = sin caducidad).
+REDIS_SOLICITUD_TTL_SEG: int = 3600

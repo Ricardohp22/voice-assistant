@@ -23,6 +23,9 @@ Alternativa sin instalar: ``PYTHONPATH=src python main.py ...``
 Comandos útiles en Linux (ALSA) para ver hardware sin Python:
 
     arecord -l
+    arecord -L | grep compartido   # PCM dsnoop compartido (Python + Node)
+
+Micrófono compartido: ver docs/alsa_mic_compartido.md (``MIC_NOMBRE_CONTIENE = compartido``).
 """
 
 from __future__ import annotations
@@ -53,13 +56,12 @@ def _dispositivo_entrada_resuelto() -> int | None:
     """
     Índice PortAudio según ``config`` (nombre tiene prioridad sobre índice).
 
-    Usado por ``--wake-turn`` y el resto de comandos de audio para abrir siempre
-    el mismo micrófono que el operador configuró en ``config.py``.
+    Por defecto busca ``compartido`` (dsnoop ALSA) para no bloquear el mic frente a Node.
+    Ver ``docs/alsa_mic_compartido.md``.
     """
-    return resolver_dispositivo_entrada(
-        config.MIC_NOMBRE_CONTIENE,
-        config.DISPOSITIVO_ENTRADA,
-    )
+    from voice_assistant.audio.dispositivo import resolver_dispositivo_entrada_config
+
+    return resolver_dispositivo_entrada_config()
 
 
 def _cmd_listar_dispositivos() -> None:

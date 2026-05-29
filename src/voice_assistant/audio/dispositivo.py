@@ -1,7 +1,9 @@
 """
 Resolución del micrófono PortAudio por **índice** o por **subcadena del nombre**.
 
-Iteración 3: cambiar de USB sin tocar código, solo ``config.py`` (nombre o índice).
+En Raspberry con micrófono compartido (ALSA ``pcm.compartido`` / dsnoop), configure
+``MIC_NOMBRE_CONTIENE = "compartido"`` para no abrir ``hw:0,0`` en exclusivo.
+Ver ``docs/alsa_mic_compartido.md``.
 """
 
 from __future__ import annotations
@@ -23,10 +25,23 @@ def resolver_dispositivo_entrada(
         1. Si ``nombre_contiene`` es una cadena no vacía (tras strip), el primer
            dispositivo de entrada cuyo nombre la contiene (sin distinguir mayúsculas).
         2. Si no, ``indice`` tal cual (puede ser ``None`` = entrada predeterminada del sistema).
+
+    Para captura simultánea con otro proceso (Node), use el PCM dsnoop (p. ej. nombre
+    ``compartido``), no el dispositivo ``hw:0,0`` del USB.
     """
     if nombre_contiene is not None and nombre_contiene.strip():
         return buscar_indice_por_subcadena(nombre_contiene.strip())
     return indice
+
+
+def resolver_dispositivo_entrada_config() -> int | None:
+    """Atajo: lee ``MIC_NOMBRE_CONTIENE`` y ``DISPOSITIVO_ENTRADA`` de ``voice_assistant.config``."""
+    from voice_assistant import config
+
+    return resolver_dispositivo_entrada(
+        config.MIC_NOMBRE_CONTIENE,
+        config.DISPOSITIVO_ENTRADA,
+    )
 
 
 def buscar_indice_por_subcadena(subcadena: str) -> int:
