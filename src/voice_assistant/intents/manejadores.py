@@ -25,7 +25,8 @@ from .ejecutor import reproducir_audio
 
 # Rutas de audio de respuesta (relativas a la raíz del repositorio).
 _AUDIO_SALUDO = "audio_messages/saludo.wav"
-_AUDIO_NUEVA_REUNION = "audio_messages/new_reunion.wav"
+_AUDIO_ASK_NAME = "audio_messages/ask_name.wav"
+_AUDIO_SUCCESFUL_MEETING = "audio_messages/new_reunion.wav"
 
 # Última transcripción capturada en el flujo ``nueva_reunion`` (segunda escucha).
 transcripcion_seguimiento_nueva_reunion: str | None = None
@@ -67,6 +68,7 @@ def manejar_saludar(*, bloqueante: bool = True) -> None:
     reproducir_audio(_AUDIO_SALUDO, bloqueante=bloqueante)
 
 
+# Funcion a ejecutar cuando se detecta la intencion "Crear nueva reunion"
 def manejar_nueva_reunion(*, bloqueante: bool = True) -> None:
     """
     Intención ``nueva_reunion``: mensaje, audio de confirmación y segunda escucha.
@@ -76,12 +78,17 @@ def manejar_nueva_reunion(*, bloqueante: bool = True) -> None:
     """
     global transcripcion_seguimiento_nueva_reunion
 
-    print("Creando nueva reunion...")
+    ## Solicita el nombre de la reunion
+    print("Cual es el nombre de la reunion...")
     # Siempre bloqueante antes del micrófono para no grabar encima del WAV de salida.
-    reproducir_audio(_AUDIO_NUEVA_REUNION, bloqueante=True)
+    reproducir_audio(_AUDIO_ASK_NAME, bloqueante=True)
 
+    ## Captura el nombre de la reunion y lo transcribe
     transcripcion_seguimiento_nueva_reunion = _grabar_y_transcribir(config.NUEVA_REUNION_ESCUCHA_SEG)
-    print(f"Transcripción (seguimiento nueva reunión): {transcripcion_seguimiento_nueva_reunion!r}")
+    print(f"Nombre de la reunion: {transcripcion_seguimiento_nueva_reunion!r}")
+
+    reproducir_audio(_AUDIO_SUCCESFUL_MEETING, bloqueante=True)
+    
 
 
 ManejadorIntencion = Callable[..., None]

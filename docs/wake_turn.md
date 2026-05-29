@@ -119,4 +119,5 @@ Secuencia recomendada al hablar:
 
 ## Documentación relacionada
 
+- [Wake word: saturación de CPU en Raspberry y solución (`deque` + hilo de inferencia)](wake_word_rendimiento_raspberry.md)
 - [Funciones tras el wakeup y catálogo JSON](funciones_post_wakeup.md)
