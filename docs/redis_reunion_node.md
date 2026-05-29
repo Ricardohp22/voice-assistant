@@ -1,33 +1,33 @@
-# Redis: solicitud de nueva reunión (Python → Node.js)
+# Redis: reunión Python ↔ Node.js (bidireccional)
 
-El asistente de voz publica en Redis cuando el usuario completa el flujo `nueva_reunion` (nombre capturado por micrófono + STT). Un proceso **Node.js** en la misma Raspberry puede reaccionar al instante vía **Pub/Sub** o leer la última solicitud con **GET**.
+Comunicación en la misma Raspberry entre el asistente de voz (Python) y el flujo Node (portal vía WebSockets).
 
-Configuración Python: `src/voice_assistant/config.py` (`REDIS_*`).  
-Código que publica: `src/voice_assistant/integrations/redis_reunion.py`, llamado desde `manejar_nueva_reunion` en `manejadores.py`.
+| Dirección | Canal Pub/Sub | Uso |
+|-----------|---------------|-----|
+| **Python → Node** | `vox:reunion:comandos` | Orden de crear reunión |
+| **Node → Python** | `vox:reunion:respuestas` | Estatus de la operación |
 
----
-
-## Flujo en el dispositivo
-
-1. Usuario dispara intención `nueva_reunion`.
-2. Se reproduce `ask_name.wav` y se graban `NUEVA_REUNION_ESCUCHA_SEG` s (p. ej. 5 s).
-3. Whisper transcribe → **nombre de la reunión**.
-4. Python escribe en Redis (clave + `PUBLISH`).
-5. Se reproduce `new_reunion.wav` (confirmación al usuario).
-
-Node debería **suscribirse al canal** al arrancar y crear la reunión en cuanto llegue el mensaje.
+Configuración: `src/voice_assistant/config.py` (`REDIS_CANAL_COMANDOS`, `REDIS_CANAL_RESPUESTAS`, `REDIS_RESPUESTA_TIMEOUT_SEG` = **5 s**).
 
 ---
 
-## Canal Pub/Sub (recomendado para reacción inmediata)
+## Flujo completo
 
-| Parámetro | Valor por defecto |
-|-----------|-------------------|
-| Canal | `vox:reunion:eventos` (`REDIS_CANAL_REUNION_EVENTOS`) |
+1. Usuario completa `nueva_reunion` (nombre por voz).
+2. Python se suscribe a **respuestas**, publica comando en **comandos**.
+3. Node recibe `iniciar_reunion`, inicia sesión y crea reunión en el portal (WebSockets).
+4. Node publica `respuesta_iniciar_reunion` en **respuestas** (y opcionalmente `SET` en clave por `solicitud_id`).
+5. Python espera hasta **5 s**:
+   - Si `estado === "exito"` → reproduce `audio_messages/new_reunion.wav`.
+   - Si error o timeout → mensaje en consola, **sin** audio de éxito.
 
-Cada solicitud es un mensaje **JSON en UTF-8** (string).
+---
 
-### Esquema del payload
+## 1. Comando Python → Node
+
+**Canal:** `vox:reunion:comandos` (`REDIS_CANAL_COMANDOS`)
+
+**Clave de respaldo (último comando):** `vox:reunion:ultima_solicitud`
 
 ```json
 {
@@ -35,32 +35,49 @@ Cada solicitud es un mensaje **JSON en UTF-8** (string).
   "solicitud_id": "550e8400-e29b-41d4-a716-446655440000",
   "nombre_reunion": "Revisión sprint",
   "transcripcion": "revisión sprint",
-  "timestamp": "2026-05-19T14:32:01.123456+00:00",
+  "timestamp": "2026-05-29T14:32:01.123456+00:00",
   "origen": "voice-assistant"
 }
 ```
 
-| Campo | Descripción |
-|-------|-------------|
-| `evento` | Siempre `iniciar_reunion` por ahora. |
-| `solicitud_id` | UUID único por solicitud (idempotencia / logs). |
-| `nombre_reunion` | Texto limpio usado como nombre (trim). |
-| `transcripcion` | Texto crudo de STT (puede coincidir con `nombre_reunion`). |
-| `timestamp` | ISO 8601 UTC. |
-| `origen` | `voice-assistant`. |
-
-Filtra en Node: `if (payload.evento === 'iniciar_reunion') { ... crear reunión con payload.nombre_reunion }`.
+Node debe suscribirse a `vox:reunion:comandos` al arrancar.
 
 ---
 
-## Clave de respaldo (GET)
+## 2. Respuesta Node → Python
 
-| Parámetro | Valor por defecto |
-|-----------|-------------------|
-| Clave | `vox:reunion:ultima_solicitud` (`REDIS_CLAVE_ULTIMA_SOLICITUD`) |
-| TTL | 3600 s (`REDIS_SOLICITUD_TTL_SEG`; `0` = sin caducidad) |
+**Canal:** `vox:reunion:respuestas` (`REDIS_CANAL_RESPUESTAS`)
 
-Mismo JSON que en Pub/Sub. Útil si Node arranca después del evento o pierde un mensaje.
+**Clave por solicitud (recomendado además del PUBLISH):**  
+`vox:reunion:respuesta:<solicitud_id>`  
+TTL sugerido: `REDIS_RESPUESTA_TTL_SEG` (120 s por defecto).
+
+```json
+{
+  "evento": "respuesta_iniciar_reunion",
+  "solicitud_id": "550e8400-e29b-41d4-a716-446655440000",
+  "estado": "exito",
+  "mensaje": "Reunión creada en el portal",
+  "detalle": {},
+  "timestamp": "2026-05-29T14:32:04.500000+00:00",
+  "origen": "node-reunion"
+}
+```
+
+### Valores de `estado`
+
+| `estado` | Significado | Python |
+|----------|-------------|--------|
+| `exito` | Sesión OK y reunión creada | Reproduce audio de éxito |
+| `error` | Fallo genérico | Solo consola |
+| `error_sesion` | No pudo iniciar sesión en el portal | Solo consola |
+| `error_reunion` | Sesión OK pero falló crear la reunión | Solo consola |
+| `error_conexion` | WebSocket / red / portal inalcanzable | Solo consola |
+| `error_timeout` | Timeout interno de Node (portal lento) | Solo consola |
+
+**Importante:** copiar el mismo `solicitud_id` del comando. Python ignora respuestas de otros ids.
+
+Si Python no recibe nada en **5 s**, trata como timeout local (sin audio de éxito).
 
 ---
 
@@ -70,84 +87,105 @@ Mismo JSON que en Pub/Sub. Útil si Node arranca después del evento o pierde un
 import { createClient } from "redis";
 
 const REDIS_URL = "redis://127.0.0.1:6379";
-const CANAL = "vox:reunion:eventos";
-const CLAVE_ULTIMA = "vox:reunion:ultima_solicitud";
+const CANAL_COMANDOS = "vox:reunion:comandos";
+const CANAL_RESPUESTAS = "vox:reunion:respuestas";
+const PREFIJO_RESPUESTA = "vox:reunion:respuesta:";
+const TTL_RESPUESTA_SEG = 120;
 
-async function crearReunionDesdeVoz(payload) {
-  console.log("Crear reunión:", payload.nombre_reunion, payload.solicitud_id);
-  // Tu lógica: API, base de datos, etc.
+async function publicarRespuesta(cmd, estado, mensaje, detalle = {}) {
+  const payload = {
+    evento: "respuesta_iniciar_reunion",
+    solicitud_id: cmd.solicitud_id,
+    estado,
+    mensaje,
+    detalle,
+    timestamp: new Date().toISOString(),
+    origen: "node-reunion",
+  };
+  const body = JSON.stringify(payload);
+  const pub = createClient({ url: REDIS_URL });
+  await pub.connect();
+  await pub.publish(CANAL_RESPUESTAS, body);
+  await pub.setEx(`${PREFIJO_RESPUESTA}${cmd.solicitud_id}`, TTL_RESPUESTA_SEG, body);
+  await pub.quit();
+}
+
+async function procesarIniciarReunion(cmd) {
+  try {
+    // 1. Iniciar sesión en el portal (WebSockets)
+    // 2. Crear reunión con cmd.nombre_reunion
+    const ok = await tuLogicaPortal(cmd.nombre_reunion);
+    if (ok) {
+      await publicarRespuesta(cmd, "exito", "Reunión creada en el portal");
+    } else {
+      await publicarRespuesta(cmd, "error_reunion", "No se pudo crear la reunión");
+    }
+  } catch (err) {
+    const msg = err?.message ?? String(err);
+    const estado = msg.includes("sesion") ? "error_sesion" : "error_conexion";
+    await publicarRespuesta(cmd, estado, msg);
+  }
 }
 
 async function main() {
   const sub = createClient({ url: REDIS_URL });
-  const cmd = createClient({ url: REDIS_URL });
   await sub.connect();
-  await cmd.connect();
-
-  // Opcional: procesar la última solicitud si ya existía al arrancar
-  const previa = await cmd.get(CLAVE_ULTIMA);
-  if (previa) {
-    await crearReunionDesdeVoz(JSON.parse(previa));
-  }
-
-  await sub.subscribe(CANAL, (mensaje) => {
-    const payload = JSON.parse(mensaje);
-    if (payload.evento === "iniciar_reunion") {
-      crearReunionDesdeVoz(payload);
+  await sub.subscribe(CANAL_COMANDOS, async (mensaje) => {
+    const cmd = JSON.parse(mensaje);
+    if (cmd.evento === "iniciar_reunion") {
+      await procesarIniciarReunion(cmd);
     }
   });
-
-  console.log("Escuchando", CANAL);
+  console.log("Node escuchando", CANAL_COMANDOS);
 }
 
 main().catch(console.error);
 ```
 
----
-
-## Conexión Redis
-
-Por defecto el asistente usa:
-
-- Host: `127.0.0.1`
-- Puerto: `6379`
-- DB: `0`
-- Sin contraseña
-
-Ajusta en `config.py` si tu instalación difiere. Desactiva publicación con `REDIS_HABILITADO = False`.
+Responde **antes de 5 s** desde que Python publicó el comando, o el asistente dará por timeout.
 
 ---
 
-## Prueba sin micrófono
+## Prueba manual (simular Node)
 
-Con Redis en marcha (`redis-cli ping` → `PONG`):
+Terminal 1 — escuchar comandos:
 
 ```bash
-pip install redis>=5.0.0
-python main.py --test-oracion "Hey vox device crea una nueva reunion"
+redis-cli SUBSCRIBE vox:reunion:comandos
 ```
 
-(Solo ejecutará el manejador si el emparejo coincide; la grabación del nombre requiere el flujo completo con audio.)
+Terminal 2 — publicar comando (como Python) y simular respuesta exitosa:
 
-Prueba directa desde Python:
+```bash
+SID=$(python -c "import uuid; print(uuid.uuid4())")
+redis-cli PUBLISH vox:reunion:comandos "{\"evento\":\"iniciar_reunion\",\"solicitud_id\":\"$SID\",\"nombre_reunion\":\"Test\",\"transcripcion\":\"Test\",\"timestamp\":\"\",\"origen\":\"voice-assistant\"}"
+redis-cli PUBLISH vox:reunion:respuestas "{\"evento\":\"respuesta_iniciar_reunion\",\"solicitud_id\":\"$SID\",\"estado\":\"exito\",\"mensaje\":\"OK\",\"detalle\":{},\"timestamp\":\"\",\"origen\":\"node-reunion\"}"
+```
+
+Prueba Python (espera respuesta):
 
 ```bash
 python -c "
-from voice_assistant.integrations import publicar_solicitud_iniciar_reunion
-print(publicar_solicitud_iniciar_reunion('Reunión de prueba'))
+from voice_assistant.integrations import publicar_y_esperar_respuesta_iniciar_reunion
+r = publicar_y_esperar_respuesta_iniciar_reunion('Prueba')
+print(r.exito, r.respuesta)
 "
-```
-
-En otra terminal:
-
-```bash
-redis-cli SUBSCRIBE vox:reunion:eventos
-# o
-redis-cli GET vox:reunion:ultima_solicitud
 ```
 
 ---
 
-## Evolución futura
+## Migración desde nombres antiguos
 
-Se pueden añadir otros `evento` en el mismo canal (`cancelar_reunion`, `unirse_reunion`, …) o claves por `solicitud_id` (`vox:reunion:solicitud:<uuid>`) sin cambiar el contrato mínimo actual.
+| Antes | Ahora |
+|-------|--------|
+| `vox:reunion:eventos` | `vox:reunion:comandos` |
+| (no existía) | `vox:reunion:respuestas` |
+
+Actualiza las suscripciones de Node al arrancar.
+
+---
+
+## Documentación relacionada
+
+- [Funciones post-wakeup](funciones_post_wakeup.md)
+- [Micrófono compartido ALSA](alsa_mic_compartido.md)

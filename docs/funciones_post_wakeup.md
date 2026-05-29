@@ -53,7 +53,7 @@ En `config.py`, `CATALOGO_INTENCIONES_RUTA` apunta al JSON (ruta relativa a la *
 | `id` | Comportamiento (`manejadores.py`) |
 |------|-----------------------------------|
 | `saludar` | Reproduce `audio_messages/saludo.wav`. |
-| `nueva_reunion` | Pide nombre (`ask_name.wav`), escucha y transcribe, publica en Redis (`iniciar_reunion`), reproduce `new_reunion.wav`. Ver [Redis → Node](redis_reunion_node.md). |
+| `nueva_reunion` | Pide nombre, publica en Redis, espera respuesta de Node (5 s); solo si `estado=exito` reproduce `new_reunion.wav`. Ver [Redis ↔ Node](redis_reunion_node.md). |
 
 ## Añadir una intención nueva
 

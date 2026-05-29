@@ -19,7 +19,7 @@ from voice_assistant import config
 from voice_assistant.audio.capture import grabar_muestras
 from voice_assistant.audio.dispositivo import resolver_dispositivo_entrada_config
 from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
-from voice_assistant.integrations import publicar_solicitud_iniciar_reunion
+from voice_assistant.integrations import publicar_y_esperar_respuesta_iniciar_reunion
 from voice_assistant.stt import transcribir_float32_16khz
 
 from .ejecutor import reproducir_audio
@@ -31,6 +31,8 @@ _AUDIO_SUCCESFUL_MEETING = "audio_messages/new_reunion.wav"
 
 # Última transcripción capturada en el flujo ``nueva_reunion`` (segunda escucha).
 transcripcion_seguimiento_nueva_reunion: str | None = None
+# Última respuesta Redis del flujo Node (reunión creada o error).
+ultima_respuesta_reunion: object | None = None
 
 
 def _dispositivo_entrada() -> int | None:
@@ -66,43 +68,54 @@ def manejar_saludar(*, bloqueante: bool = True) -> None:
     reproducir_audio(_AUDIO_SALUDO, bloqueante=bloqueante)
 
 
-# Funcion a ejecutar cuando se detecta la intencion "Crear nueva reunion"
 def manejar_nueva_reunion(*, bloqueante: bool = True) -> None:
     """
-    Intención ``nueva_reunion``: mensaje, audio de confirmación y segunda escucha.
-
-    Tras reproducir ``new_reunion.wav``, graba ``NUEVA_REUNION_ESCUCHA_SEG`` s y
-    guarda la transcripción en ``transcripcion_seguimiento_nueva_reunion``.
+    Intención ``nueva_reunion``: pide nombre, envía comando a Node vía Redis,
+    espera estatus (máx. ``REDIS_RESPUESTA_TIMEOUT_SEG``) y solo si es ``exito``
+    reproduce el audio de confirmación.
     """
-    global transcripcion_seguimiento_nueva_reunion
+    global transcripcion_seguimiento_nueva_reunion, ultima_respuesta_reunion
 
-    ## Solicita el nombre de la reunion
     print("Cual es el nombre de la reunion...")
-    # Siempre bloqueante antes del micrófono para no grabar encima del WAV de salida.
     reproducir_audio(_AUDIO_ASK_NAME, bloqueante=True)
 
-    ## Captura el nombre de la reunion y lo transcribe
     transcripcion_seguimiento_nueva_reunion = _grabar_y_transcribir(config.NUEVA_REUNION_ESCUCHA_SEG)
     nombre_reunion = (transcripcion_seguimiento_nueva_reunion or "").strip()
     print(f"Nombre de la reunion: {nombre_reunion!r}")
 
     if not nombre_reunion:
         print("Aviso: no se capturó nombre; no se publica en Redis.")
-    else:
-        try:
-            solicitud_id = publicar_solicitud_iniciar_reunion(
-                nombre_reunion,
-                transcripcion=transcripcion_seguimiento_nueva_reunion,
-            )
+        return
+
+    ultima_respuesta_reunion = None
+    try:
+        print(
+            f"Enviando crear reunión a Node (canal {config.REDIS_CANAL_COMANDOS!r}), "
+            f"esperando respuesta hasta {config.REDIS_RESPUESTA_TIMEOUT_SEG:.0f} s..."
+        )
+        resultado = publicar_y_esperar_respuesta_iniciar_reunion(
+            nombre_reunion,
+            transcripcion=transcripcion_seguimiento_nueva_reunion,
+        )
+        ultima_respuesta_reunion = resultado.respuesta
+
+        if resultado.respuesta is None:
             print(
-                f"Redis: solicitud de reunión publicada (id={solicitud_id}, "
-                f"canal={config.REDIS_CANAL_REUNION_EVENTOS!r})."
+                f"Sin respuesta de Node en {config.REDIS_RESPUESTA_TIMEOUT_SEG:.0f} s "
+                f"(solicitud_id={resultado.solicitud_id}). No se reproduce audio de éxito."
             )
-        except Exception as exc:
-            print(f"Error al publicar en Redis: {exc}")
+            return
 
-    reproducir_audio(_AUDIO_SUCCESFUL_MEETING, bloqueante=True)
-
+        r = resultado.respuesta
+        if r.exito:
+            print(f"Reunión creada correctamente: {r.mensaje or '(sin mensaje)'}")
+            reproducir_audio(_AUDIO_SUCCESFUL_MEETING, bloqueante=True)
+        else:
+            print(f"No se pudo crear la reunión [{r.estado}]: {r.mensaje or '(sin mensaje)'}")
+            if r.detalle:
+                print(f"Detalle: {r.detalle}")
+    except Exception as exc:
+        print(f"Error en comunicación Redis: {exc}")
 
 
 ManejadorIntencion = Callable[..., None]

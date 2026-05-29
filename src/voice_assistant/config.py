@@ -91,9 +91,14 @@ REDIS_PORT: int = 6379
 REDIS_DB: int = 0
 REDIS_PASSWORD: str | None = None
 REDIS_SOCKET_TIMEOUT_SEG: float = 2.0
-# Pub/Sub: el proceso Node debe suscribirse a este canal para reacción inmediata.
-REDIS_CANAL_REUNION_EVENTOS: str = "vox:reunion:eventos"
-# Clave con el último JSON publicado (GET de respaldo; ver docs/redis_reunion_node.md).
+# Pub/Sub bidireccional (ver docs/redis_reunion_node.md).
+REDIS_CANAL_COMANDOS: str = "vox:reunion:comandos"  # Python → Node
+REDIS_CANAL_RESPUESTAS: str = "vox:reunion:respuestas"  # Node → Python
+# Clave con el último comando publicado (GET de respaldo para Node).
 REDIS_CLAVE_ULTIMA_SOLICITUD: str = "vox:reunion:ultima_solicitud"
-# TTL de la clave de respaldo (0 = sin caducidad).
+# Clave por solicitud: vox:reunion:respuesta:<solicitud_id> (Node SET, Python GET).
+REDIS_CLAVE_RESPUESTA_PREFIJO: str = "vox:reunion:respuesta:"
 REDIS_SOLICITUD_TTL_SEG: int = 3600
+REDIS_RESPUESTA_TTL_SEG: int = 120
+# Tiempo máximo esperando respuesta de Node tras ``iniciar_reunion``.
+REDIS_RESPUESTA_TIMEOUT_SEG: float = 5.0
