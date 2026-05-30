@@ -1,15 +1,22 @@
 """
 Comunicación bidireccional Python ↔ Node.js vía Redis (flujo nueva reunión).
 
-Canales (Pub/Sub):
-  - ``REDIS_CANAL_COMANDOS``   — Python → Node  (órdenes)
-  - ``REDIS_CANAL_RESPUESTAS`` — Node → Python (estatus)
+Contrato de mensajes (ver docs/redis_reunion_node.md):
+  - Python publica en REDIS_CANAL_COMANDOS:
+        { "evento": "iniciar_reunion", "solicitud_id": uuid, "nombre_reunion": ...,
+          "transcripcion": ..., "timestamp": iso8601, "origen": "voice-assistant" }
+  - Node responde en REDIS_CANAL_RESPUESTAS y/o con SET en la clave por solicitud_id:
+        { "evento": "respuesta_iniciar_reunion", "solicitud_id": uuid,
+          "estado": "exito"|"error*", "mensaje": ..., "detalle": {...} }
 
-Claves de respaldo (GET):
-  - ``REDIS_CLAVE_ULTIMA_SOLICITUD`` — último comando publicado
-  - ``REDIS_CLAVE_RESPUESTA_PREFIJO`` + ``solicitud_id`` — respuesta por solicitud
+Mecanismo de doble canal (Pub/Sub + clave GET):
+  - La suscripción al canal de respuestas se abre ANTES de publicar el comando,
+    para no perder respuestas rápidas de Node (race condition).
+  - Si el mensaje Pub/Sub no llega, se consulta la clave por solicitud_id como
+    respaldo (útil si Node reinicia o hay lag en el broker).
 
-Ver ``docs/redis_reunion_node.md``.
+El único punto de entrada desde intents.py es:
+    ``publicar_y_esperar_respuesta_iniciar_reunion(nombre, transcripcion=...)``
 """
 
 from __future__ import annotations
@@ -23,7 +30,7 @@ from typing import Any, Literal
 
 from voice_assistant import config
 
-# --- Eventos y estados del contrato ---
+# Nombres de evento usados en el contrato JSON con Node.
 EVENTO_COMANDO_INICIAR = "iniciar_reunion"
 EVENTO_RESPUESTA_INICIAR = "respuesta_iniciar_reunion"
 
@@ -33,9 +40,13 @@ ESTADOS_ERROR: frozenset[str] = frozenset(
 )
 
 
+# =============================================================================
+# DATACLASSES DE RESPUESTA
+# =============================================================================
+
 @dataclass(frozen=True)
 class ResultadoRespuestaReunion:
-    """Respuesta de Node tras intentar crear la reunión."""
+    """Respuesta de Node tras intentar crear la reunión (campo por campo del JSON)."""
 
     solicitud_id: str
     estado: str
@@ -50,16 +61,20 @@ class ResultadoRespuestaReunion:
 
 @dataclass(frozen=True)
 class ResultadoSolicitudReunion:
-    """Resultado de publicar comando y esperar respuesta (o timeout)."""
+    """Resultado de publicar el comando y esperar (o no) la respuesta de Node."""
 
     solicitud_id: str
     respuesta: ResultadoRespuestaReunion | None
-    """``None`` si no hubo respuesta en el tiempo configurado."""
+    """None si no hubo respuesta dentro del timeout configurado."""
 
     @property
     def exito(self) -> bool:
         return self.respuesta is not None and self.respuesta.exito
 
+
+# =============================================================================
+# HELPERS INTERNOS
+# =============================================================================
 
 def _cliente_redis():
     import redis
@@ -79,14 +94,15 @@ def _ahora_iso() -> str:
 
 
 def _clave_respuesta(solicitud_id: str) -> str:
+    """Clave Redis por solicitud: vox:reunion:respuesta:<uuid>"""
     return f"{config.REDIS_CLAVE_RESPUESTA_PREFIJO}{solicitud_id}"
 
 
 def _payload_comando_iniciar(nombre_reunion: str, transcripcion: str | None) -> dict[str, Any]:
-    solicitud_id = str(uuid.uuid4())
+    """Construye el payload JSON del comando ``iniciar_reunion``."""
     return {
         "evento": EVENTO_COMANDO_INICIAR,
-        "solicitud_id": solicitud_id,
+        "solicitud_id": str(uuid.uuid4()),
         "nombre_reunion": nombre_reunion,
         "transcripcion": transcripcion if transcripcion is not None else nombre_reunion,
         "timestamp": _ahora_iso(),
@@ -95,6 +111,7 @@ def _payload_comando_iniciar(nombre_reunion: str, transcripcion: str | None) -> 
 
 
 def _parsear_respuesta(data: dict[str, Any]) -> ResultadoRespuestaReunion | None:
+    """Valida y convierte el dict JSON de Node a ResultadoRespuestaReunion."""
     if data.get("evento") != EVENTO_RESPUESTA_INICIAR:
         return None
     solicitud_id = str(data.get("solicitud_id", "")).strip()
@@ -112,6 +129,7 @@ def _parsear_respuesta(data: dict[str, Any]) -> ResultadoRespuestaReunion | None
 
 
 def _leer_respuesta_desde_json(cuerpo: str, solicitud_id: str) -> ResultadoRespuestaReunion | None:
+    """Parsea cuerpo JSON y verifica que el solicitud_id coincide con el esperado."""
     try:
         data = json.loads(cuerpo)
     except json.JSONDecodeError:
@@ -123,6 +141,15 @@ def _leer_respuesta_desde_json(cuerpo: str, solicitud_id: str) -> ResultadoRespu
     return _parsear_respuesta(data)
 
 
+# =============================================================================
+# ESPERA DE RESPUESTA
+#
+# Se suscribe al canal de respuestas (Pub/Sub) y en cada iteración también
+# consulta la clave de respaldo por solicitud_id. El doble mecanismo cubre:
+#   - Respuestas rápidas de Node: llegan por Pub/Sub.
+#   - Latencia o reinicio de Node: aparecen en la clave GET.
+# =============================================================================
+
 def esperar_respuesta_iniciar_reunion(
     solicitud_id: str,
     *,
@@ -130,15 +157,16 @@ def esperar_respuesta_iniciar_reunion(
     pubsub: object | None = None,
 ) -> ResultadoRespuestaReunion | None:
     """
-    Espera en ``REDIS_CANAL_RESPUESTAS`` (y clave por ``solicitud_id``) la respuesta de Node.
+    Escucha en REDIS_CANAL_RESPUESTAS y en la clave por ``solicitud_id``.
 
     Args:
-        solicitud_id: UUID devuelto al publicar el comando.
-        timeout_seg: Máximo de espera; por defecto ``REDIS_RESPUESTA_TIMEOUT_SEG``.
-        pubsub: Si se pasó uno ya suscrito al canal de respuestas, se reutiliza.
+        solicitud_id: UUID del comando publicado.
+        timeout_seg: Máximo de espera; por defecto REDIS_RESPUESTA_TIMEOUT_SEG.
+        pubsub: Objeto pubsub ya suscrito (optimización: evita re-suscribir si
+                se llama desde ``publicar_y_esperar_respuesta_iniciar_reunion``).
 
     Returns:
-        ``ResultadoRespuestaReunion`` o ``None`` si vence el tiempo.
+        ResultadoRespuestaReunion o None si vence el tiempo.
     """
     limite = timeout_seg if timeout_seg is not None else config.REDIS_RESPUESTA_TIMEOUT_SEG
     cliente = _cliente_redis()
@@ -164,6 +192,7 @@ def esperar_respuesta_iniciar_reunion(
                     if hit is not None:
                         return hit
 
+            # Respaldo por clave GET: Node puede SET sin pasar por Pub/Sub.
             cuerpo_clave = cliente.get(clave)
             if cuerpo_clave:
                 hit = _leer_respuesta_desde_json(cuerpo_clave, solicitud_id)
@@ -180,16 +209,93 @@ def esperar_respuesta_iniciar_reunion(
     return None
 
 
+# =============================================================================
+# FUNCIÓN PÚBLICA PRINCIPAL
+#
+# Este es el único punto de entrada que usa intents.py. Combina publicar +
+# esperar en una operación atómica desde el punto de vista del manejador.
+# =============================================================================
+
+def publicar_y_esperar_respuesta_iniciar_reunion(
+    nombre_reunion: str,
+    *,
+    transcripcion: str | None = None,
+    timeout_seg: float | None = None,
+) -> ResultadoSolicitudReunion:
+    """
+    Publica el comando ``iniciar_reunion`` y espera la respuesta de Node.
+
+    La suscripción al canal de respuestas se abre ANTES de publicar para no
+    perder respuestas rápidas (evita la race condition: publish → suscribir).
+
+    Args:
+        nombre_reunion: Nombre capturado por STT en el segundo turno de escucha.
+        transcripcion: Texto completo de la transcripción (opcional; si es None
+                       se usa nombre_reunion como fallback).
+        timeout_seg: Máximo de espera; por defecto REDIS_RESPUESTA_TIMEOUT_SEG.
+
+    Returns:
+        ResultadoSolicitudReunion con la respuesta de Node (o respuesta=None si timeout).
+
+    Raises:
+        ValueError: Si nombre_reunion está vacío.
+        RuntimeError: Si Redis está deshabilitado en config.
+    """
+    nombre = nombre_reunion.strip()
+    if not nombre:
+        raise ValueError("nombre_reunion no puede estar vacío")
+    if not config.REDIS_HABILITADO:
+        raise RuntimeError("Redis deshabilitado en config (REDIS_HABILITADO=False)")
+
+    payload = _payload_comando_iniciar(nombre, transcripcion)
+    cuerpo = json.dumps(payload, ensure_ascii=False)
+    solicitud_id = str(payload["solicitud_id"])
+    limite = timeout_seg if timeout_seg is not None else config.REDIS_RESPUESTA_TIMEOUT_SEG
+
+    cliente = _cliente_redis()
+    cliente.ping()
+
+    # Suscribir ANTES de publicar para no perder respuestas rápidas de Node.
+    pubsub = cliente.pubsub(ignore_subscribe_messages=True)
+    pubsub.subscribe(config.REDIS_CANAL_RESPUESTAS)
+
+    try:
+        # Guardar copia del comando (respaldo GET para Node si pierde el mensaje Pub/Sub).
+        if config.REDIS_SOLICITUD_TTL_SEG > 0:
+            cliente.setex(config.REDIS_CLAVE_ULTIMA_SOLICITUD, int(config.REDIS_SOLICITUD_TTL_SEG), cuerpo)
+        else:
+            cliente.set(config.REDIS_CLAVE_ULTIMA_SOLICITUD, cuerpo)
+
+        cliente.publish(config.REDIS_CANAL_COMANDOS, cuerpo)
+
+        respuesta = esperar_respuesta_iniciar_reunion(
+            solicitud_id,
+            timeout_seg=limite,
+            pubsub=pubsub,
+        )
+    finally:
+        try:
+            pubsub.unsubscribe(config.REDIS_CANAL_RESPUESTAS)
+            pubsub.close()
+        except Exception:
+            pass
+
+    return ResultadoSolicitudReunion(solicitud_id=solicitud_id, respuesta=respuesta)
+
+
 def publicar_solicitud_iniciar_reunion(
     nombre_reunion: str,
     *,
     transcripcion: str | None = None,
 ) -> str:
     """
-    Publica comando ``iniciar_reunion`` hacia Node (sin esperar respuesta).
+    Publica el comando ``iniciar_reunion`` sin esperar respuesta.
+
+    Útil para disparar la acción de forma fire-and-forget. Devuelve el
+    ``solicitud_id`` para que el llamador pueda hacer GET de la respuesta más tarde.
 
     Returns:
-        ``solicitud_id`` del payload publicado.
+        solicitud_id (UUID string) del payload publicado.
     """
     nombre = nombre_reunion.strip()
     if not nombre:
@@ -211,54 +317,3 @@ def publicar_solicitud_iniciar_reunion(
 
     cliente.publish(config.REDIS_CANAL_COMANDOS, cuerpo)
     return solicitud_id
-
-
-def publicar_y_esperar_respuesta_iniciar_reunion(
-    nombre_reunion: str,
-    *,
-    transcripcion: str | None = None,
-    timeout_seg: float | None = None,
-) -> ResultadoSolicitudReunion:
-    """
-    Publica ``iniciar_reunion`` y espera la respuesta de Node (máx. 5 s por defecto).
-
-    Suscripción al canal de respuestas **antes** de publicar el comando para no perder
-    respuestas rápidas.
-    """
-    nombre = nombre_reunion.strip()
-    if not nombre:
-        raise ValueError("nombre_reunion no puede estar vacío")
-    if not config.REDIS_HABILITADO:
-        raise RuntimeError("Redis deshabilitado en config (REDIS_HABILITADO=False)")
-
-    payload = _payload_comando_iniciar(nombre, transcripcion)
-    cuerpo = json.dumps(payload, ensure_ascii=False)
-    solicitud_id = str(payload["solicitud_id"])
-    limite = timeout_seg if timeout_seg is not None else config.REDIS_RESPUESTA_TIMEOUT_SEG
-
-    cliente = _cliente_redis()
-    cliente.ping()
-    pubsub = cliente.pubsub(ignore_subscribe_messages=True)
-    pubsub.subscribe(config.REDIS_CANAL_RESPUESTAS)
-
-    try:
-        if config.REDIS_SOLICITUD_TTL_SEG > 0:
-            cliente.setex(config.REDIS_CLAVE_ULTIMA_SOLICITUD, int(config.REDIS_SOLICITUD_TTL_SEG), cuerpo)
-        else:
-            cliente.set(config.REDIS_CLAVE_ULTIMA_SOLICITUD, cuerpo)
-
-        cliente.publish(config.REDIS_CANAL_COMANDOS, cuerpo)
-
-        respuesta = esperar_respuesta_iniciar_reunion(
-            solicitud_id,
-            timeout_seg=limite,
-            pubsub=pubsub,
-        )
-    finally:
-        try:
-            pubsub.unsubscribe(config.REDIS_CANAL_RESPUESTAS)
-            pubsub.close()
-        except Exception:
-            pass
-
-    return ResultadoSolicitudReunion(solicitud_id=solicitud_id, respuesta=respuesta)

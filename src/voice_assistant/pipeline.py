@@ -1,26 +1,33 @@
 """
-Pipeline de un turno completo (``--wake-turn``).
+Pipeline de un turno completo: wake → grabar orden → STT → intención → acción.
 
-Secuencia:
-  1. ``esperar_primera_activacion_wake`` — stream + openWakeWord hasta la primera detección.
-  2. Pausa opcional post-wake (evitar solapamiento con el beep de confirmación).
-  3. ``grabar_muestras`` — ventana fija para la orden del usuario.
-  4. ``preparar_muestras_para_stt`` — mono 16 kHz para Whisper.
-  5. ``transcribir_float32_16khz`` — texto de la orden.
-  6. ``emparejar_intencion`` + ``ejecutar_intencion`` — catálogo JSON + manejadores en código.
+Este módulo es el director de orquesta del asistente. Cada fase tiene una
+responsabilidad clara y delega en el módulo especializado correspondiente:
 
-Ver también ``docs/wake_turn.md``.
+  Fase 1 — WAKE      : wake.esperar_primera_activacion_wake
+                         Escucha OWW; devuelve al primer hit o al timeout.
+  Fase 2 — PAUSA     : time.sleep (opcional)
+                         Evita que el beep de confirmación entre en la grabación.
+  Fase 3 — GRABAR    : audio.grabar_muestras
+                         Ventana fija bloqueante para la orden del usuario.
+  Fase 4 — FORMATO   : audio.preparar_muestras_para_stt
+                         Mono float32 @ 16 kHz (contrato Whisper).
+  Fase 5 — STT       : stt.transcribir_float32_16khz
+                         Texto de la orden vía faster-whisper local.
+  Fase 6 — INTENCIÓN : intents.emparejar_intencion + intents.ejecutar_intencion
+                         Catálogo JSON → manejador en código.
+
+Ver también docs/wake_turn.md y docs/funciones_post_wakeup.md.
 """
 
 from __future__ import annotations
 
 import time
 
-from voice_assistant.audio.capture import grabar_muestras, guardar_wav_mono
-from voice_assistant.audio.formato_pipeline import preparar_muestras_para_stt
+from voice_assistant import config
+from voice_assistant.audio import grabar_muestras, guardar_wav_mono, preparar_muestras_para_stt
 from voice_assistant.intents import cargar_catalogo, emparejar_intencion, ejecutar_intencion
 from voice_assistant.stt import transcribir_float32_16khz
-from voice_assistant.config_theme import COLOR
 from voice_assistant.wake import esperar_primera_activacion_wake
 
 
@@ -50,18 +57,21 @@ def ejecutar_turno_wake_grabar_stt_intent(
     guardar_wav_debug: bool,
 ) -> None:
     """
-    Ejecuta un único ciclo wake → orden → STT → intención → acción.
+    Ejecuta un único ciclo completo wake → orden → STT → intención → acción.
 
-    Pensado para pruebas manuales (``python main.py --wake-turn``) y como
-    plantilla para un bucle continuo en producción. Cada fase imprime estado
-    en consola; los fallos terminan el turno sin excepción salvo errores graves
-    (micrófono, JSON inválido, acción mal definida).
+    Pensado para ``python main.py --wake-turn`` y como plantilla para un bucle
+    continuo en producción. Cada fase imprime su estado en consola; los fallos
+    terminan el turno sin excepción salvo errores graves (micrófono, JSON
+    inválido, intención sin manejador registrado).
+
+    Todos los parámetros se leen de ``config.py`` en ``main.py``; este módulo
+    no importa ``config`` directamente para ser testeable con valores inyectados.
     """
     # -------------------------------------------------------------------------
-    # Fase 1: esperar la primera activación de wake word (openWakeWord en stream)
+    # Fase 1: Wake word
+    # El stream queda abierto dentro de esperar_primera_activacion_wake; al
+    # detectar wake reproduce el beep (bloqueante) antes de devolver.
     # -------------------------------------------------------------------------
-    # El micrófono queda abierto en ``esperar_primera_activacion_wake``; al detectar
-    # wake puede reproducirse un WAV de confirmación (bloqueante) antes de devolver.
     print(f"Esperando wake word (máx {timeout_espera_wake_seg:.0f} s)...")
     hit_wake = esperar_primera_activacion_wake(
         timeout_espera_wake_seg,
@@ -84,17 +94,19 @@ def ejecutar_turno_wake_grabar_stt_intent(
     print(f"Wake detectado: modelo={modelo_w!r} score={score_w:.3f}")
 
     # -------------------------------------------------------------------------
-    # Fase 2: pausa breve para que el beep / cola de wake no entre en la grabación
+    # Fase 2: Pausa post-wake
+    # Deja que el beep de confirmación termine de reproducirse por hardware
+    # antes de abrir el stream de grabación.
     # -------------------------------------------------------------------------
     if silencio_post_wake_seg > 0:
-        print(f"Pausa post-wake {silencio_post_wake_seg:.2f} s (reduce solapamiento con el beep)...")
+        print(f"Pausa post-wake {silencio_post_wake_seg:.2f} s...")
         time.sleep(silencio_post_wake_seg)
 
     # -------------------------------------------------------------------------
-    # Fase 3: grabación bloqueante de la orden del usuario
+    # Fase 3: Grabación de la orden
+    # Abre un stream distinto al de wake (bloqueante, sd.rec).
     # -------------------------------------------------------------------------
-    # ``grabar_muestras`` abre de nuevo el micrófono (stream distinto al del wake).
-    print(f"{COLOR['rojo']}Grabando orden ({duracion_grabacion_orden_seg:.1f} s)...{COLOR['reset']}")
+    print(f"{config.COLOR['rojo']}Grabando orden ({duracion_grabacion_orden_seg:.1f} s)...{config.COLOR['reset']}")
     muestras, tasa_efectiva = grabar_muestras(
         duracion_grabacion_orden_seg,
         dispositivo=dispositivo_entrada,
@@ -103,11 +115,11 @@ def ejecutar_turno_wake_grabar_stt_intent(
     )
 
     # -------------------------------------------------------------------------
-    # Fase 4: normalizar audio al contrato STT (mono float32 @ 16 kHz habitualmente)
+    # Fase 4: Normalizar al contrato STT (mono float32 @ 16 kHz)
     # -------------------------------------------------------------------------
     audio_16k, sr_stt = preparar_muestras_para_stt(muestras, tasa_efectiva, tasa_salida_pipeline_hz)
 
-    # WAV opcional para depurar si Whisper o el micrófono fallan en campo.
+    # WAV opcional para revisar en campo qué captó el mic antes de Whisper.
     if guardar_wav_debug:
         from datetime import datetime
         from pathlib import Path
@@ -119,7 +131,7 @@ def ejecutar_turno_wake_grabar_stt_intent(
         print(f"WAV de depuración: {w.resolve()}")
 
     # -------------------------------------------------------------------------
-    # Fase 5: transcripción local (faster-whisper)
+    # Fase 5: Transcripción STT (faster-whisper local)
     # -------------------------------------------------------------------------
     print("Transcribiendo (Whisper local)...")
     texto = transcribir_float32_16khz(
@@ -132,7 +144,9 @@ def ejecutar_turno_wake_grabar_stt_intent(
     print(f"STT: {texto!r}")
 
     # -------------------------------------------------------------------------
-    # Fase 6: emparejar en JSON y ejecutar manejador por ``id`` (ver manejadores.py)
+    # Fase 6: Emparejamiento en catálogo JSON y ejecución del manejador
+    # emparejar_intencion busca el disparador más largo con mayor prioridad.
+    # ejecutar_intencion despacha al manejador registrado en intents.py.
     # -------------------------------------------------------------------------
     cat = cargar_catalogo(catalogo_intenciones_ruta)
     hit = emparejar_intencion(cat, texto)

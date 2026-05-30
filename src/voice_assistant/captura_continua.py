@@ -1,9 +1,13 @@
 """
-Escucha continua por bloques (chunks) sin wake word — iteración 4.
+Escucha continua por bloques (chunks) sin wake word — comando ``--stream-chunks``.
 
-Abre un ``InputStream`` de PortAudio, recibe audio en callbacks y **no retiene**
-buffers de audio (solo contadores y métricas) para poder correr largos periodos
-sin crecer la memoria por acumulación de muestras.
+Propósito: herramienta de diagnóstico y medición de rendimiento del micrófono.
+Abre un InputStream de PortAudio, recibe audio en callbacks y **no retiene**
+buffers de audio (solo contadores y métricas), permitiendo correr largos periodos
+sin crecer en memoria por acumulación de muestras.
+
+Este módulo es independiente del pipeline de producción (wake → STT → intenciones).
+Solo lo usa ``main.py --stream-chunks``.
 """
 
 from __future__ import annotations
@@ -14,20 +18,16 @@ import time
 import numpy as np
 import sounddevice as sd
 
-from .capture import resolver_tasa_muestreo_entrada
+from voice_assistant.audio import resolver_tasa_muestreo_entrada
 
 
-def _leer_vm_rss_mib() -> float | None:
-    """Resident set size del proceso en MiB (Linux); None si no aplica."""
-    try:
-        with open("/proc/self/status", encoding="utf-8") as f:
-            for line in f:
-                if line.startswith("VmRSS:"):
-                    partes = line.split()
-                    return float(partes[1]) / 1024.0  # kB → MiB
-    except OSError:
-        return None
-
+# =============================================================================
+# ACUMULADOR DE MÉTRICAS (thread-safe)
+#
+# El callback de PortAudio corre en un hilo de audio con prioridad alta.
+# _AcumuladorCallback protege los contadores con un Lock para que el hilo
+# principal pueda leerlos sin carreras de datos.
+# =============================================================================
 
 class _AcumuladorCallback:
     """Estado actualizado solo desde el callback de audio (con candado)."""
@@ -61,6 +61,22 @@ class _AcumuladorCallback:
             return self.chunks, self.marcos, self.callbacks_con_estado, pico
 
 
+def _leer_vm_rss_mib() -> float | None:
+    """Resident set size del proceso en MiB (Linux); None si no aplica."""
+    try:
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    partes = line.split()
+                    return float(partes[1]) / 1024.0     # kB → MiB
+    except OSError:
+        return None
+
+
+# =============================================================================
+# FUNCIÓN PRINCIPAL
+# =============================================================================
+
 def ejecutar_escucha_continua(
     duracion_segundos: float,
     *,
@@ -74,20 +90,27 @@ def ejecutar_escucha_continua(
     """
     Captura en bloques durante ``duracion_segundos`` (0 = hasta ``KeyboardInterrupt``).
 
+    Cada ``estadisticas_cada_seg`` segundos imprime una línea con:
+    - Chunks y marcos acumulados y su tasa instantánea.
+    - Deriva entre tiempo de reloj y audio equivalente capturado.
+    - Pico de intervalo entre callbacks (detecta jitter / xruns).
+    - Uso de CPU del proceso y RSS de memoria.
+
     Args:
-        duracion_segundos: Si es 0, no termina por tiempo (use Ctrl+C).
+        duracion_segundos: 0 = no termina por tiempo (use Ctrl+C).
         dispositivo: Índice PortAudio o None.
-        tasa_muestreo_solicitada_hz: Tasa deseada; si el hardware no la admite, se usa la nativa.
+        tasa_muestreo_solicitada_hz: Tasa deseada; si el hw no la admite, se usa la nativa.
         canales: Canales de entrada.
-        marcos_por_bloque: ``blocksize`` de ``InputStream`` (muestras por callback).
-        latencia: ``\"low\"``, ``\"high\"`` o segundos (``sounddevice``).
-        estadisticas_cada_seg: Cada cuántos segundos imprimir una línea de métricas.
+        marcos_por_bloque: blocksize del InputStream (muestras por callback).
+        latencia: "low", "high" o segundos (sounddevice).
+        estadisticas_cada_seg: Cada cuántos segundos imprimir métricas.
     """
     if marcos_por_bloque <= 0:
         raise ValueError("marcos_por_bloque debe ser > 0")
     if estadisticas_cada_seg <= 0:
         raise ValueError("estadisticas_cada_seg debe ser > 0")
 
+    # Verificar la tasa efectiva antes de abrir el stream, para advertir si habrá fallback.
     tasa_efectiva = resolver_tasa_muestreo_entrada(
         dispositivo,
         tasa_muestreo_solicitada_hz,
@@ -121,8 +144,9 @@ def ejecutar_escucha_continua(
     c_prev, m_prev = 0, 0
 
     print(
-        f"Stream: {tasa_efectiva} Hz, blocksize={marcos_por_bloque} (~{esperado_ms:.2f} ms/callback), "
-        f"latencia={latencia!r}. Ctrl+C para detener antes de tiempo."
+        f"Stream: {tasa_efectiva} Hz, blocksize={marcos_por_bloque} "
+        f"(~{esperado_ms:.2f} ms/callback), latencia={latencia!r}. "
+        "Ctrl+C para detener antes de tiempo."
     )
 
     with stream:
@@ -176,6 +200,8 @@ def ejecutar_escucha_continua(
     c_fin, m_fin, x_fin, _ = acum.leer_totales_y_reset_pico_intervalo()
     cpu_fin = time.process_time() - t0_cpu
     print(
-        f"Resumen: {c_fin} callbacks, {m_fin} marcos (~{m_fin / tasa_efectiva:.2f} s de audio eq.), "
-        f"{x_fin} callbacks con flag de estado, {wall_fin:.2f} s reloj, {cpu_fin:.2f} s CPU proceso."
+        f"Resumen: {c_fin} callbacks, {m_fin} marcos "
+        f"(~{m_fin / tasa_efectiva:.2f} s de audio eq.), "
+        f"{x_fin} callbacks con flag de estado, "
+        f"{wall_fin:.2f} s reloj, {cpu_fin:.2f} s CPU proceso."
     )
