@@ -14,8 +14,6 @@ Mecanismo de doble canal (Pub/Sub + clave GET):
     para no perder respuestas rápidas de Node (race condition).
   - Si el mensaje Pub/Sub no llega, se consulta la clave por solicitud_id como
     respaldo (útil si Node reinicia o hay lag en el broker).
-
-El único punto de entrada desde intents.py es:
     ``publicar_y_esperar_respuesta_iniciar_reunion(nombre, transcripcion=...)``
 """
 
@@ -241,17 +239,21 @@ def publicar_y_esperar_respuesta_iniciar_reunion(
         ValueError: Si nombre_reunion está vacío.
         RuntimeError: Si Redis está deshabilitado en config.
     """
+
+    # Normalizacion del nombre
     nombre = nombre_reunion.strip()
     if not nombre:
         raise ValueError("nombre_reunion no puede estar vacío")
     if not config.REDIS_HABILITADO:
         raise RuntimeError("Redis deshabilitado en config (REDIS_HABILITADO=False)")
 
+    # Creacion del mensaje a publicar en REDIS
     payload = _payload_comando_iniciar(nombre, transcripcion)
     cuerpo = json.dumps(payload, ensure_ascii=False)
     solicitud_id = str(payload["solicitud_id"])
     limite = timeout_seg if timeout_seg is not None else config.REDIS_RESPUESTA_TIMEOUT_SEG
 
+    # Definicion del cliente y ping para validar conexion
     cliente = _cliente_redis()
     cliente.ping()
 
@@ -265,7 +267,7 @@ def publicar_y_esperar_respuesta_iniciar_reunion(
             cliente.setex(config.REDIS_CLAVE_ULTIMA_SOLICITUD, int(config.REDIS_SOLICITUD_TTL_SEG), cuerpo)
         else:
             cliente.set(config.REDIS_CLAVE_ULTIMA_SOLICITUD, cuerpo)
-
+        # Publica la peticion de nueva reunion en el canal vox:reunion:comandos
         cliente.publish(config.REDIS_CANAL_COMANDOS, cuerpo)
 
         respuesta = esperar_respuesta_iniciar_reunion(

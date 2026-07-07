@@ -143,6 +143,13 @@ def _cmd_list_intents() -> None:
 def _cmd_test_oracion(oracion: str) -> None:
     """Empareja una oración contra el catálogo y ejecuta el manejador del id detectado."""
     cat = cargar_catalogo(config.CATALOGO_INTENCIONES_RUTA)
+    # devuelve un objeto de la clase ResultadoEmpareo o None si no hay coincidencia.
+    # El objeto ResultadoEmpareo tiene los siguientes atributos:
+    # - intencion_id: str
+    # - intencion_titulo: str
+    # - disparador: str
+    # - texto_tras_wake: str
+    
     hit = emparejar_intencion(cat, oracion)
     if hit is None:
         print("Sin intención coincidente para esta oración.")

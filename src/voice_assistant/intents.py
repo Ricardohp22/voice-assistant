@@ -130,12 +130,19 @@ def emparejar_intencion(catalogo: dict[str, Any], oracion: str) -> ResultadoEmpa
     Returns:
         ResultadoEmpareo con el ``id`` a despachar, o None si no hay coincidencia.
     """
+    # Limpia  texto
     norm = normalizar_oracion(oracion)
+    # Carga los prefijos del wake del JSON.
     prefijos = list(catalogo.get("prefijos_wake") or [])
+    # Quita los prefijos de wake del texto si aparecen al inicio.
     tras_wake = _quitar_prefijos_wake(norm, prefijos)
-    texto_busqueda = tras_wake if tras_wake.strip() else norm
 
+    texto_busqueda = tras_wake if tras_wake.strip() else norm
+    #print(f"Texto de busqueda: {texto_busqueda}")
+
+    # Carga catalogo de intenciones.
     intenciones = list(catalogo.get("intenciones") or [])
+    # Ordena las intenciones por prioridad.
     intenciones.sort(key=lambda x: int(x.get("prioridad", 0)), reverse=True)
 
     mejor: tuple[int, int, dict[str, Any], str] | None = None

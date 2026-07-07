@@ -5,7 +5,7 @@ recordings/
 *.pyc
 *.pyo
 *.pyd
-
+.cursor
 # Directorios de caché de Python
 __pycache__/
 src/voice_assistant/__pycache__/
