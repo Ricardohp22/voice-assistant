@@ -28,16 +28,17 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import sounddevice as sd
 
 from voice_assistant import config
 from voice_assistant.audio import (
-    cargar_wav_pcm16_mono_float32,
     grabar_muestras,
     preparar_muestras_para_stt,
     resolver_dispositivo_entrada_config,
@@ -173,30 +174,31 @@ def emparejar_intencion(catalogo: dict[str, Any], oracion: str) -> ResultadoEmpa
 # =============================================================================
 # SECCIÓN 2: UTILIDADES DE AUDIO
 #
-# Estas funciones existían en ejecutor.py (33 líneas) y solo se llaman desde
-# los manejadores de la Sección 3. Se inlinean aquí para evitar un archivo
-# extra con una sola función.
+# _reproducir_audio lee el WAV como int16 crudo y lo entrega directamente a
+# sounddevice, sin conversiones intermedias a float32 ni operaciones de clip.
+# Para audios cortos de respuesta (saludo, confirmación) eso es suficiente.
 # =============================================================================
-
-def _resolver_ruta_audio(ruta: str) -> Path:
-    """Rutas relativas a la raíz del repo; absolutas se usan tal cual."""
-    p = Path(ruta)
-    return p if p.is_absolute() else raiz_repositorio() / p
-
 
 def _reproducir_audio(ruta: str, *, bloqueante: bool = False) -> None:
     """
-    Reproduce un WAV mono por el dispositivo de salida por defecto.
+    Reproduce un WAV PCM 16-bit por el dispositivo de salida por defecto.
 
-    Si el archivo no existe, imprime aviso y continúa sin lanzar excepción
-    (útil en entornos de desarrollo sin todos los WAVs presentes).
+    Lee los datos crudos int16 directamente del archivo sin convertir a float32
+    ni hacer clip, ya que sounddevice acepta int16 de forma nativa. Si el
+    archivo no existe, imprime aviso y continúa sin lanzar excepción.
     """
-    archivo = _resolver_ruta_audio(ruta)
-    if not archivo.is_file():
-        print(f"Aviso: no existe el audio {archivo}; omitiendo reproducción.")
+    p = Path(ruta) if Path(ruta).is_absolute() else raiz_repositorio() / ruta
+    if not p.is_file():
+        print(f"Aviso: no existe el audio {p}; omitiendo reproducción.")
         return
-    audio, sr = cargar_wav_pcm16_mono_float32(archivo)
-    sd.play(audio, samplerate=sr, blocking=bloqueante)
+    with wave.open(str(p), "rb") as wf:
+        tasa = wf.getframerate()
+        canales = wf.getnchannels()
+        datos = wf.readframes(wf.getnframes())
+    audio = np.frombuffer(datos, dtype=np.int16)
+    if canales > 1:
+        audio = audio.reshape(-1, canales)
+    sd.play(audio, samplerate=tasa, blocking=bloqueante)
 
 
 def _grabar_y_transcribir(duracion_seg: float) -> str:
